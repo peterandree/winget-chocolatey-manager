@@ -44,6 +44,11 @@ git clone https://github.com/peterandree/winget-chocolatey-manager.git
 cd winget-chocolatey-manager
 ```
 
+Alternatively check point 2 and install from winget with
+```bash
+winget install peterandree.winget-chocolatey-manager
+```
+
 ### 2. Ensure WinGet is Installed
 
 Windows 11 users already have WinGet. Windows 10 users should install it:
