@@ -4,6 +4,9 @@ Chocolatey Registration Script for Apps Not Managed by WinGet
 This script finds apps that aren't in WinGet and registers them with Chocolatey
 Version 1.0 - Checks for unregistered apps and creates registration script
 Version 1.1 - Added error handling and direct registration
+
+Deprecated: This file is a backward-compatibility shim. All logic is being
+migrated to the ``src/wincoman/`` package (Issue #29). Use ``wincoman`` CLI.
 """
 
 import subprocess
@@ -14,6 +17,14 @@ import sys
 import time
 import argparse
 from typing import List, Dict, Set, Tuple, Optional
+
+# ── Delegate to new modules where available ──────────────────────────────────
+from wincoman.shell import run_command as _shell_run_command
+from wincoman.shell import get_choco_major_version as _shell_get_choco_major_version
+from wincoman.scoring import fuzzy_score as _scoring_fuzzy_score
+from wincoman.scoring import normalize_name as _scoring_normalize_name
+from wincoman.scoring import versions_differ as _scoring_versions_differ
+from wincoman.config import ScanConfig as _ScanConfig
 
 try:
     from rapidfuzz import fuzz as _fuzz
@@ -42,11 +53,11 @@ class PackageManager:
         if min_score > 0:
             self.FUZZY_MATCH_THRESHOLD = min_score
 
-    # Default cache file path (~/.winget-choco-manager/state.json)
+    # Default cache file path (~/.wincoman/state.json)
     @staticmethod
     def _default_cache_path() -> str:
         import os
-        return os.path.join(os.path.expanduser('~'), '.winget-choco-manager', 'state.json')
+        return os.path.join(os.path.expanduser('~'), '.wincoman', 'state.json')
 
     log = logging.getLogger(__name__)
 
@@ -61,67 +72,34 @@ class PackageManager:
 
     @staticmethod
     def run_command(cmd: List[str], capture_output=True, shell=False, timeout: Optional[int] = None) -> Tuple[str, str, int]:
-        """Run a command and return stdout, stderr, and return code"""
-        if timeout is None:
-            timeout = PackageManager.COMMAND_TIMEOUT
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=capture_output,
-                text=True,
-                encoding='utf-8',
-                errors='ignore',
-                shell=shell,
-                timeout=timeout,
-            )
-            return result.stdout, result.stderr, result.returncode
-        except subprocess.TimeoutExpired:
-            cmd_str = cmd if isinstance(cmd, str) else ' '.join(str(c) for c in cmd)
-            logging.warning(f"⚠️  Command timed out after {timeout}s: {cmd_str}")
-            return "", f"Command timed out after {timeout}s", 1
-        except FileNotFoundError as e:
-            return "", f"Command not found: {cmd[0]}", 1
-        except Exception as e:
-            return "", str(e), 1
+        """Run a command and return stdout, stderr, and return code.
+
+        Delegates to :func:`wincoman.shell.run_command`.
+        """
+        return _shell_run_command(
+            cmd,
+            capture_output=capture_output,
+            shell=shell,
+            timeout=timeout if timeout is not None else PackageManager.COMMAND_TIMEOUT,
+        )
 
     @staticmethod
     def get_choco_major_version() -> int:
-        """Return the Chocolatey major version number, or 0 if undetermined."""
-        try:
-            result = subprocess.run(
-                ['choco', '--version'],
-                capture_output=True, text=True, encoding='utf-8',
-                errors='ignore', timeout=15,
-            )
-            version_str = result.stdout.strip()
-            major = int(version_str.split('.')[0])
-            return major
-        except Exception:
-            return 0
+        """Return the Chocolatey major version number, or 0 if undetermined.
+
+        Delegates to :func:`wincoman.shell.get_choco_major_version`.
+        """
+        return _shell_get_choco_major_version()
 
     @staticmethod
     def normalize_name(name: str) -> str:
-        """Normalize app name for display/fallback comparison (strips versions & punctuation)."""
-        if not name:
-            return ""
-        normalized = re.sub(r'\d+\.\d+.*', '', name)
-        normalized = re.sub(r'[^a-z0-9]', '', normalized.lower())
-        return normalized
+        """Normalise app name.  Delegates to :func:`wincoman.scoring.normalize_name`."""
+        return _scoring_normalize_name(name)
 
     @staticmethod
     def fuzzy_score(a: str, b: str) -> int:
-        """Return a 0-100 similarity score between two strings using rapidfuzz.
-
-        Uses WRatio which handles partial matches, token reordering, and case
-        differences. Falls back to a binary 100/0 score (normalised exact match)
-        when rapidfuzz is not installed.
-        """
-        if _RAPIDFUZZ_AVAILABLE:
-            return int(_fuzz.WRatio(a, b))
-        # Fallback: exact match on normalized names
-        na = re.sub(r'[^a-z0-9]', '', a.lower())
-        nb = re.sub(r'[^a-z0-9]', '', b.lower())
-        return 100 if na == nb else 0
+        """Return fuzzy similarity score.  Delegates to :func:`wincoman.scoring.fuzzy_score`."""
+        return _scoring_fuzzy_score(a, b)
 
     def check_prerequisites(self) -> bool:
         """Check if required tools are available"""
@@ -358,23 +336,8 @@ class PackageManager:
 
     @staticmethod
     def _versions_differ(installed: str, choco: str) -> bool:
-        """Return True if the installed version and Chocolatey version differ at the major level.
-
-        Both versions are normalised to dotted numeric components; if either is
-        unknown/empty the comparison is skipped and False is returned.
-        """
-        def _major(ver: str) -> str:
-            ver = ver.strip()
-            if not ver or ver.lower() in ('unknown', 'n/a', ''):
-                return ''
-            parts = re.findall(r'\d+', ver)
-            return parts[0] if parts else ''
-
-        m_inst = _major(installed)
-        m_choco = _major(choco)
-        if not m_inst or not m_choco:
-            return False
-        return m_inst != m_choco
+        """Delegates to :func:`wincoman.scoring.versions_differ`."""
+        return _scoring_versions_differ(installed, choco)
 
     def _is_managed_by_winget(self, display_name: str) -> bool:
         """Return True if the app name fuzzy-matches a WinGet-managed package."""
