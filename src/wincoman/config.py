@@ -10,6 +10,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+# Ordered list of manager names: earlier entries are preferred when multiple
+# managers match the same app.
+MANAGER_PREFERENCE: list[str] = ["winget", "chocolatey", "scoop"]
+
 
 def _default_cache_path() -> str:
     return os.path.join(os.path.expanduser("~"), ".wincoman", "state.json")
@@ -62,6 +66,11 @@ class ScanConfig:
     log_file: Optional[str] = None
     """Tee log output to this file in addition to stdout."""
 
+    # ── Manager preference ───────────────────────────────────────────────────
+    prefer_manager: Optional[str] = None
+    """Force a specific manager as primary when multiple matches exist.
+    Overrides the MANAGER_PREFERENCE order. E.g. 'chocolatey'."""
+
     @classmethod
     def from_namespace(cls, ns: argparse.Namespace) -> "ScanConfig":
         """Construct a ``ScanConfig`` from an ``argparse.Namespace``."""
@@ -77,4 +86,5 @@ class ScanConfig:
             quiet=getattr(ns, "quiet", False),
             log_file=getattr(ns, "log_file", None),
             search_workers=getattr(ns, "search_workers", 5) or 5,
+            prefer_manager=getattr(ns, "prefer_manager", None),
         )

@@ -16,12 +16,24 @@ def _mock_manager(name, available=True, managed=False):
     mgr.is_available.return_value = available
     mgr.is_managed.return_value = managed
     mgr.list_managed.return_value = set()
+    # search_many fires on_result for each result (default: empty)
+    def _search_many(apps, *, progress_cb=None, on_result=None):
+        return []
+    mgr.search_many.side_effect = _search_many
     return mgr
 
 
 def _mock_choco(available=True, search_results=None, managed=False):
     mgr = _mock_manager("chocolatey", available=available, managed=managed)
-    mgr.search_many.return_value = search_results or []
+    results = search_results or []
+
+    def _search_many(apps, *, progress_cb=None, on_result=None):
+        for m in results:
+            if on_result:
+                on_result(m.app_name, m)
+        return results
+
+    mgr.search_many.side_effect = _search_many
     return mgr
 
 
@@ -253,3 +265,74 @@ class TestOrchestratorSummary:
                 code = orch.run()
         assert code == 0
         assert "SCAN SUMMARY" in caplog.text
+
+
+class TestOrchestratorMultiManagerSearch:
+    """Issue #39: Step 5 fans out to all installable managers."""
+
+    def _match_for(self, app_name, manager):
+        return PackageMatch(app_name, "1.0", f"{app_name.lower()}-pkg", "1.0.0", False, manager)
+
+    def test_winget_match_becomes_primary_when_preferred(self, caplog):
+        """WinGet match is chosen as primary per MANAGER_PREFERENCE."""
+        cfg = ScanConfig()
+        wg_match = self._match_for("Git", "winget")
+        ch_match = self._match_for("Git", "chocolatey")
+
+        winget = _mock_manager("winget")
+
+        def _wg_search_many(apps, *, progress_cb=None, on_result=None):
+            if on_result:
+                on_result("Git", wg_match)
+            return [wg_match]
+        winget.search_many.side_effect = _wg_search_many
+
+        choco = _mock_choco(search_results=[ch_match])
+        scoop = _mock_manager("scoop")
+
+        with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
+             patch("wincoman.runner.scan_installed_programs",
+                   return_value=[{"DisplayName": "Git", "DisplayVersion": "1.0"}]), \
+             patch("wincoman.runner.save_cache"), \
+             patch("wincoman.runner.register_interactive", return_value=True):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            with caplog.at_level(logging.INFO):
+                code = orch.run()
+        assert code == 0
+        assert "winget" in caplog.text
+
+    def test_prefer_manager_override(self):
+        """--prefer-manager chocolatey overrides MANAGER_PREFERENCE."""
+        cfg = ScanConfig(prefer_manager="chocolatey")
+        wg_match = self._match_for("Git", "winget")
+        ch_match = self._match_for("Git", "chocolatey")
+
+        winget = _mock_manager("winget")
+
+        def _wg_search(apps, *, progress_cb=None, on_result=None):
+            if on_result:
+                on_result("Git", wg_match)
+            return [wg_match]
+        winget.search_many.side_effect = _wg_search
+
+        choco = _mock_choco(search_results=[ch_match])
+        scoop = _mock_manager("scoop")
+
+        captured_candidates = []
+
+        def mock_display(c):
+            captured_candidates.extend(c)
+
+        with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
+             patch("wincoman.runner.scan_installed_programs",
+                   return_value=[{"DisplayName": "Git", "DisplayVersion": "1.0"}]), \
+             patch("wincoman.runner.save_cache"), \
+             patch("wincoman.runner.display_results", side_effect=mock_display), \
+             patch("wincoman.runner.register_interactive", return_value=True):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            orch.run()
+
+        assert any(
+            hasattr(c, "primary") and c.primary.manager == "chocolatey"
+            for c in captured_candidates
+        )

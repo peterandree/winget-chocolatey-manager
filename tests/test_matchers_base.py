@@ -1,4 +1,4 @@
-"""Tests for src/wincoman/matchers/base.py (Issues #22, #38)."""
+"""Tests for src/wincoman/matchers/base.py (Issues #22, #38, #39)."""
 import pytest
 
 from wincoman.matchers.base import (
@@ -7,6 +7,7 @@ from wincoman.matchers.base import (
     InstallablePackageManager,
     PackageMatch,
     SearchablePackageManager,
+    rank_candidates,
 )
 
 
@@ -291,3 +292,70 @@ class TestInstallablePackageManagerABC:
 
         obj = Complete()
         assert obj.name == "test"
+
+
+# ---------------------------------------------------------------------------
+# rank_candidates (Issue #39)
+# ---------------------------------------------------------------------------
+
+
+class TestRankCandidates:
+    def _pm(self, app, pkg_id, manager):
+        return PackageMatch(app, "1.0", pkg_id, "1.0.0", False, manager)
+
+    def test_single_manager_match(self):
+        results = {"Git": [self._pm("Git", "git", "chocolatey")]}
+        candidates = rank_candidates(results, ["winget", "chocolatey"])
+        assert len(candidates) == 1
+        assert candidates[0].primary.manager == "chocolatey"
+        assert candidates[0].alternatives == []
+
+    def test_preference_order_picks_winget_first(self):
+        results = {
+            "Git": [
+                self._pm("Git", "git", "chocolatey"),
+                self._pm("Git", "Git.Git", "winget"),
+            ]
+        }
+        candidates = rank_candidates(results, ["winget", "chocolatey"])
+        assert candidates[0].primary.manager == "winget"
+        assert len(candidates[0].alternatives) == 1
+        assert candidates[0].alternatives[0].manager == "chocolatey"
+
+    def test_prefer_override_moves_to_front(self):
+        results = {
+            "Git": [
+                self._pm("Git", "git", "chocolatey"),
+                self._pm("Git", "Git.Git", "winget"),
+            ]
+        }
+        candidates = rank_candidates(results, ["winget", "chocolatey"], prefer_override="chocolatey")
+        assert candidates[0].primary.manager == "chocolatey"
+
+    def test_apps_with_no_match_excluded(self):
+        results = {"Git": [self._pm("Git", "git", "chocolatey")], "UnknownApp": []}
+        candidates = rank_candidates(results, ["winget", "chocolatey"])
+        names = [c.app_name for c in candidates]
+        assert "Git" in names
+        assert "UnknownApp" not in names
+
+    def test_multiple_apps_ranked_independently(self):
+        results = {
+            "Git": [self._pm("Git", "Git.Git", "winget")],
+            "VLC": [self._pm("VLC", "vlc", "chocolatey")],
+        }
+        candidates = rank_candidates(results, ["winget", "chocolatey"])
+        assert len(candidates) == 2
+
+    def test_alternatives_sorted_by_preference(self):
+        results = {
+            "App": [
+                self._pm("App", "app-scoop", "scoop"),
+                self._pm("App", "App.App", "winget"),
+                self._pm("App", "app-choco", "chocolatey"),
+            ]
+        }
+        candidates = rank_candidates(results, ["winget", "chocolatey", "scoop"])
+        assert candidates[0].primary.manager == "winget"
+        assert candidates[0].alternatives[0].manager == "chocolatey"
+        assert candidates[0].alternatives[1].manager == "scoop"

@@ -157,15 +157,15 @@ class TestDisplaySummary:
         s.record_search_result("Foo", None)
         with caplog.at_level(logging.INFO):
             display_summary(s)
-        assert "Chocolatey matches found" in caplog.text
-        assert "No Chocolatey match" in caplog.text
+        assert "Package manager matches found" in caplog.text
+        assert "No package manager match" in caplog.text
 
     def test_omits_choco_section_when_no_search_done(self, caplog):
         s = ScanSummary()
         s.record_classification("Git", "winget")
         with caplog.at_level(logging.INFO):
             display_summary(s)
-        assert "Chocolatey matches" not in caplog.text
+        assert "Package manager matches" not in caplog.text
 
     def test_empty_summary_still_renders(self, caplog):
         s = ScanSummary()

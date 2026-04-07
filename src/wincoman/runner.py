@@ -2,7 +2,7 @@
 
 :class:`Orchestrator` wires all pipeline stages in order:
 prerequisites → WinGet/Scoop/registry/Chocolatey (parallel) → detector →
-Chocolatey search → cache → display → register.
+multi-manager search → cache → display → register.
 
 The manager list is injected via the constructor so integration tests can
 substitute mock adapters for the entire pipeline.
@@ -14,9 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from wincoman.cache import default_cache_path, load_cache, save_cache
-from wincoman.config import ScanConfig
+from wincoman.config import MANAGER_PREFERENCE, ScanConfig
 from wincoman.detector import find_unmanaged
 from wincoman.installer import register_interactive, register_packages
+from wincoman.matchers.base import AppCandidates, InstallablePackageManager, PackageMatch, rank_candidates
 from wincoman.matchers.chocolatey import ChocolateyManager
 from wincoman.matchers.scoop import ScoopManager
 from wincoman.matchers.winget import WinGetManager
@@ -39,6 +40,8 @@ class Orchestrator:
         self._winget = winget_mgr or WinGetManager(min_score=self.config.min_score)
         self._scoop = scoop_mgr or ScoopManager()
         self._choco = choco_mgr or ChocolateyManager(config=self.config)
+        # All managers that support install — ordered by MANAGER_PREFERENCE
+        self._installable: list[InstallablePackageManager] = [self._winget, self._choco]
 
     def run(self) -> int:
         """Execute the full scan pipeline.
@@ -55,12 +58,12 @@ class Orchestrator:
 
         # ── Cache shortcut ────────────────────────────────────────────────────
         unmanaged_apps: list[dict] = []
-        matches: list = []
+        candidates: list[AppCandidates] = []
 
         if cfg.use_cache:
             cached = load_cache(cfg.cache_path)
             if cached is not None:
-                unmanaged_apps, matches = cached
+                unmanaged_apps, candidates = cached
             else:
                 logging.warning("Cache unavailable — falling back to full scan.")
                 cfg = ScanConfig(**{**cfg.__dict__, "use_cache": False})  # type: ignore[arg-type]
@@ -109,53 +112,56 @@ class Orchestrator:
                 display_summary(summary)
                 return 0
 
-            # Step 5: Search Chocolatey repository
-            logging.info("\nStep 5/5: Searching Chocolatey Repository")
+            # Step 5: Search all installable managers concurrently
+            logging.info("\nStep 5/5: Searching Package Repositories")
 
-            def _on_search_result(
-                app_name: str, match: object | None
-            ) -> None:
-                from wincoman.matchers.base import PackageMatch as _PM
+            # Collect all matches keyed by app_name across managers
+            all_results: dict[str, list[PackageMatch]] = {
+                app["name"]: [] for app in unmanaged_apps
+            }
 
-                summary.record_search_result(
-                    app_name, match if isinstance(match, _PM) else None
-                )
-                max_w = 40
-                app_display = (
-                    (app_name[: max_w - 3] + "...")
-                    if len(app_name) > max_w
-                    else app_name
-                )
-                if match is not None and isinstance(match, _PM):
-                    pkg_info = f"{match.pkg_id} {match.pkg_version}"
-                    mismatch_flag = (
-                        " ⚠️ version mismatch" if match.version_mismatch else ""
+            def _on_search_result(app_name: str, match: object | None) -> None:
+                if isinstance(match, PackageMatch):
+                    all_results.setdefault(app_name, []).append(match)
+                    summary.record_search_result(app_name, match)
+                    max_w = 40
+                    app_display = (
+                        (app_name[: max_w - 3] + "...") if len(app_name) > max_w else app_name
                     )
-                    logging.info(
-                        f"  {app_display:<42} found {pkg_info}{mismatch_flag}"
-                    )
+                    pkg_info = f"{match.pkg_id} [{match.manager}] {match.pkg_version}"
+                    mismatch_flag = " ⚠️ version mismatch" if match.version_mismatch else ""
+                    logging.info(f"  {app_display:<42} found {pkg_info}{mismatch_flag}")
                 else:
-                    logging.info(f"  {app_display:<42} no match")
+                    # Only record no-match once (from first manager to respond None)
+                    if not all_results.get(app_name):
+                        summary.record_search_result(app_name, None)
 
-            matches = self._choco.search_many(
-                unmanaged_apps, on_result=_on_search_result
+            for mgr in self._installable:
+                if mgr.is_available():
+                    logging.info(f"  Searching {mgr.name}...")
+                    mgr.search_many(unmanaged_apps, on_result=_on_search_result)
+
+            candidates = rank_candidates(
+                all_results,
+                MANAGER_PREFERENCE,
+                prefer_override=cfg.prefer_manager,
             )
 
-            if not matches:
-                logging.warning("No matching Chocolatey packages found.")
+            if not candidates:
+                logging.warning("No matching packages found in any package manager.")
                 display_summary(summary)
                 return 0
 
             # Persist cache
-            save_cache(cfg.cache_path, unmanaged_apps, matches)
+            save_cache(cfg.cache_path, unmanaged_apps, candidates)
 
-        if not matches:
-            logging.info("No unmanaged apps with Chocolatey matches found.")
+        if not candidates:
+            logging.info("No unmanaged apps with package manager matches found.")
             return 0
 
         # Display
         display_summary(summary)
-        display_results(matches)
+        display_results(candidates)
 
         if cfg.dry_run:
             logging.info("DRY-RUN: no packages were installed.")
@@ -163,12 +169,12 @@ class Orchestrator:
 
         # Register
         if cfg.export_only:
-            return 0 if export_to_batch(matches, cfg.output_path) else 1
+            return 0 if export_to_batch(candidates, cfg.output_path) else 1
 
         if cfg.auto:
-            return 0 if register_packages(matches, cfg) else 1
+            return 0 if register_packages(candidates, cfg) else 1
 
-        return 0 if register_interactive(matches, cfg) else 1
+        return 0 if register_interactive(candidates, cfg) else 1
 
     # ------------------------------------------------------------------
     # Internal helpers
