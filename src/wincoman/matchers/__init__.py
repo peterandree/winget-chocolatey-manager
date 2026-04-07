@@ -1,0 +1,1 @@
+"""Package manager adapter classes."""

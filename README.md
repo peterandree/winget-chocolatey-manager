@@ -30,10 +30,29 @@ This tool helps Windows users efficiently manage their applications by identifyi
 ## Requirements
 
 - **Windows 10/11**
-- **Python 3.6 or higher**
+- **Python 3.11 or higher**
+- **[uv](https://docs.astral.sh/uv/)** — fast Python project manager (replaces pip)
 - **WinGet** (pre-installed on Windows 11, [download for Windows 10](https://aka.ms/getwinget))
 - **Chocolatey** (optional, [installation guide](https://chocolatey.org/install))
-- **Administrator privileges** (recommended for registration)
+- **Administrator privileges** (required for `choco install`)
+
+## Quickstart (uv)
+
+```powershell
+# 1. Clone
+git clone https://github.com/peterandree/winget-chocolatey-manager.git
+cd winget-chocolatey-manager
+
+# 2. Install uv (if not already installed)
+winget install astral-sh.uv
+
+# 3. Install dependencies and run
+uv run wincoman --help
+uv run wincoman           # full interactive scan
+uv run wincoman --dry-run # preview without installing
+```
+
+> **Run as Administrator** — `choco install` requires elevation.
 
 ## Installation
 
@@ -42,11 +61,6 @@ This tool helps Windows users efficiently manage their applications by identifyi
 ```bash
 git clone https://github.com/peterandree/winget-chocolatey-manager.git
 cd winget-chocolatey-manager
-```
-
-Alternatively check point 2 and install from winget with
-```bash
-winget install peterandree.winget-chocolatey-manager
 ```
 
 ### 2. Ensure WinGet is Installed
@@ -78,13 +92,15 @@ choco --version
 
 ## Usage
 
-### Run as Administrator (Recommended)
+### Run as Administrator (Required for installation)
 
 Right-click PowerShell/Terminal → "Run as Administrator"
 
-```bash
-python register_unmanaged_apps.py
+```powershell
+uv run wincoman
 ```
+
+> **Legacy:** `python register_unmanaged_apps.py` still works as a backward-compat shim.
 
 ### Interactive Workflow
 
