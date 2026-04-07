@@ -229,3 +229,88 @@ class TestRegisterInteractive:
             input_fn=lambda _: next(responses),
         )
         assert result is True
+
+
+class TestRegisterInteractiveManagerSelection:
+    """Issue #41: Choice 2 shows manager alternatives for AppCandidates."""
+
+    def _candidate_with_alts(self, app="Git"):
+        pm_wg = PackageMatch(app, "2.44", f"{app}.{app}", "2.44.0", False, "winget")
+        pm_ch = PackageMatch(app, "2.44", app.lower(), "2.44.0", False, "chocolatey")
+        return AppCandidates(app, "2.44", primary=pm_wg, alternatives=[pm_ch])
+
+    def test_choice_2_single_manager_yes(self):
+        from wincoman.installer import register_interactive
+
+        runner_calls = []
+
+        def runner(cmd, **kw):
+            runner_calls.append(cmd)
+            return "", "", 0
+
+        cand = AppCandidates(
+            "Git", "2.44",
+            primary=PackageMatch("Git", "2.44", "git", "2.44.0", False, "chocolatey"),
+        )
+        responses = iter(["2", "y"])
+        result = register_interactive(
+            [cand],
+            input_fn=lambda _: next(responses),
+            runner=runner,
+        )
+        assert result is True
+
+    def test_choice_2_multi_manager_picks_alternative(self):
+        """User selects option 2 (chocolatey) instead of option 1 (winget)."""
+        from wincoman.installer import register_interactive
+
+        choco_mgr = MagicMock()
+        choco_mgr.install.return_value = True
+        managers = {"chocolatey": choco_mgr, "winget": MagicMock()}
+
+        cand = self._candidate_with_alts("Git")
+        # "2" = select option 2 (chocolatey alternative)
+        responses = iter(["2", "2"])
+        result = register_interactive(
+            [cand],
+            input_fn=lambda _: next(responses),
+            managers=managers,
+        )
+        assert result is True
+        choco_mgr.install.assert_called_once()
+        installed_match = choco_mgr.install.call_args[0][0]
+        assert installed_match.manager == "chocolatey"
+
+    def test_choice_2_multi_manager_skip(self):
+        """User skips by choosing the 'skip' option."""
+        from wincoman.installer import register_interactive
+
+        cand = self._candidate_with_alts("Git")
+        # "2" = review, "3" = skip (since there are 2 managers, skip = option 3)
+        responses = iter(["2", "3"])
+        result = register_interactive(
+            [cand],
+            input_fn=lambda _: next(responses),
+        )
+        assert result is True
+
+    def test_choice_2_multi_manager_picks_primary(self):
+        """User selects option 1 (winget primary)."""
+        from wincoman.installer import register_interactive
+
+        winget_mgr = MagicMock()
+        winget_mgr.install.return_value = True
+        managers = {"winget": winget_mgr, "chocolatey": MagicMock()}
+
+        cand = self._candidate_with_alts("Git")
+        # "2" = review mode, "1" = pick winget (primary)
+        responses = iter(["2", "1"])
+        result = register_interactive(
+            [cand],
+            input_fn=lambda _: next(responses),
+            managers=managers,
+        )
+        assert result is True
+        winget_mgr.install.assert_called_once()
+        installed_match = winget_mgr.install.call_args[0][0]
+        assert installed_match.manager == "winget"

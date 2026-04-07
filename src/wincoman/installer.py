@@ -124,6 +124,49 @@ def register_packages(
     return len(failed) == 0
 
 
+def _prompt_manager_choice(
+    entry: AppCandidates,
+    i: int,
+    total: int,
+    input_fn: Callable[[str], str],
+) -> Optional[PackageMatch]:
+    """Ask user whether to register *entry* and which manager to use.
+
+    Returns:
+        The chosen :class:`PackageMatch`, or ``None`` if the user skips.
+    """
+    app_name = entry.app_name
+    all_matches = entry.all_matches
+
+    if len(all_matches) == 1:
+        # Single option — just ask yes/no
+        while True:
+            response = input_fn(
+                f"  [{i}/{total}] Register {app_name} "
+                f"via {entry.primary.manager} [{entry.primary.pkg_id}]? (y/n): "
+            ).strip().lower()
+            if response in ["y", "n"]:
+                break
+        return entry.primary if response == "y" else None
+
+    # Multiple options — show menu
+    logging.info(f"\n  [{i}/{total}] {app_name}")
+    for idx, m in enumerate(all_matches, 1):
+        primary_flag = " (recommended)" if m is entry.primary else ""
+        logging.info(f"    {idx}. {m.manager}: {m.pkg_id}{primary_flag}")
+    logging.info(f"    {len(all_matches) + 1}. Skip")
+
+    valid = [str(n) for n in range(1, len(all_matches) + 2)]
+    while True:
+        choice = input_fn(f"  Select (1-{len(all_matches) + 1}): ").strip()
+        if choice in valid:
+            break
+    idx = int(choice) - 1
+    if idx >= len(all_matches):
+        return None
+    return all_matches[idx]
+
+
 def register_interactive(
     matches: list[AppCandidates] | list[PackageMatch] | list[dict],
     config: Optional[ScanConfig] = None,
@@ -166,15 +209,23 @@ def register_interactive(
 
     elif choice == "2":
         for i, entry in enumerate(matches, 1):
-            app_name, _ = _resolve_match(entry)
-            while True:
-                response = input_fn(
-                    f"  [{i}/{len(matches)}] Register {app_name}? (y/n): "
-                ).strip().lower()
-                if response in ["y", "n"]:
-                    break
-            if response == "y":
-                packages_to_register.append(entry)
+            if isinstance(entry, AppCandidates) and entry.alternatives:
+                chosen = _prompt_manager_choice(entry, i, len(matches), input_fn)
+                if chosen is not None:
+                    # Wrap the chosen match in a single-candidate AppCandidates
+                    packages_to_register.append(
+                        AppCandidates(entry.app_name, entry.app_version, primary=chosen)
+                    )
+            else:
+                app_name, _ = _resolve_match(entry)
+                while True:
+                    response = input_fn(
+                        f"  [{i}/{len(matches)}] Register {app_name}? (y/n): "
+                    ).strip().lower()
+                    if response in ["y", "n"]:
+                        break
+                if response == "y":
+                    packages_to_register.append(entry)
 
         if not packages_to_register:
             logging.info("\nNo packages selected. Exiting.")
