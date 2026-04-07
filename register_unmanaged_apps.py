@@ -446,7 +446,7 @@ class PackageManager:
             print(f"\n[{i}/{len(packages_to_register)}] Registering: {match['app_name']}")
             print(f"    Chocolatey package: {match['choco_id']}")
 
-            cmd = ['choco', 'install', match['choco_id'], '-y', '-n', '--force']
+            cmd = ['choco', 'install', match['choco_id'], '-y', '--force']
             stdout, stderr, code = self.run_command(cmd)
 
             if code == 0:
@@ -475,7 +475,7 @@ class PackageManager:
                 print(f"  - {match['app_name']} ({match['choco_id']})")
             print("\nYou can try registering these manually with:")
             for match in failed:
-                print(f"  choco install {match['choco_id']} -y -n --force")
+                print(f"  choco install {match['choco_id']} -y --force")
 
         return len(failed) == 0
 
@@ -491,7 +491,7 @@ class PackageManager:
 
                 for match in self.matches:
                     f.write(f'echo Registering: {match["app_name"]}\r\n')
-                    f.write(f'choco install {match["choco_id"]} -y -n --force\r\n')
+                    f.write(f'choco install {match["choco_id"]} -y --force\r\n')
                     f.write('echo.\r\n')
 
                 f.write('echo.\r\n')

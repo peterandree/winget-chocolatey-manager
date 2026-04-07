@@ -212,3 +212,36 @@ class TestMicrosoftFilter:
     def test_microsoft_excluded_when_flag_set(self):
         script = self._get_ps_script(exclude_microsoft=True)
         assert 'notmatch' in script.lower()
+
+
+# ---------------------------------------------------------------------------
+# Issue #4 -- choco install -n skips PowerShell scripts
+# ---------------------------------------------------------------------------
+
+class TestChocoInstallNoSkipPS:
+    def test_install_cmd_has_no_n_flag(self):
+        pm = PackageManager()
+        pm.matches = [{'app_name': 'Git', 'choco_id': 'git', 'app_version': '2.44', 'choco_version': '2.44'}]
+        captured_cmds = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmds.append(list(cmd))
+            return '', '', 0
+
+        with patch.object(PackageManager, 'run_command', side_effect=fake_run):
+            with patch('builtins.input', return_value='1'):
+                pm.register_packages_interactive()
+
+        install_cmds = [c for c in captured_cmds if 'install' in c]
+        assert install_cmds, 'Expected at least one install command'
+        for cmd in install_cmds:
+            assert '-n' not in cmd, f'-n flag found in install command: {cmd}'
+            assert '--skippowershell' not in cmd
+
+    def test_export_batch_has_no_n_flag(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        pm = PackageManager()
+        pm.matches = [{'app_name': 'Git', 'choco_id': 'git', 'app_version': '2.44', 'choco_version': '2.44'}]
+        pm.export_to_batch()
+        content = (tmp_path / 'register_unmanaged_apps.bat').read_text()
+        assert '-n' not in content
