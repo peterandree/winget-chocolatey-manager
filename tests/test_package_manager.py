@@ -165,3 +165,50 @@ class TestChocoVersionCompat:
     def test_get_choco_major_version_returns_zero_on_error(self):
         with patch('subprocess.run', side_effect=FileNotFoundError()):
             assert PackageManager.get_choco_major_version() == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #5 -- Admin check is non-blocking
+# ---------------------------------------------------------------------------
+
+class TestAdminCheck:
+    def _run_prereq(self, is_admin: bool):
+        pm = PackageManager()
+        with patch.object(PackageManager, 'run_command', return_value=('v1.0\n', '', 0)):
+            with patch('ctypes.windll.shell32.IsUserAnAdmin', return_value=int(is_admin)):
+                return pm.check_prerequisites()
+
+    def test_returns_false_when_not_admin(self):
+        result = self._run_prereq(is_admin=False)
+        assert result is False
+
+    def test_returns_true_when_admin(self):
+        result = self._run_prereq(is_admin=True)
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #6 -- PowerShell filter excludes Microsoft apps (now opt-in)
+# ---------------------------------------------------------------------------
+
+class TestMicrosoftFilter:
+    def _get_ps_script(self, exclude_microsoft: bool) -> str:
+        pm = PackageManager(exclude_microsoft=exclude_microsoft)
+        captured = []
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            return '[]', '', 0
+        with patch.object(PackageManager, 'run_command', side_effect=fake_run):
+            pm.get_installed_programs()
+        for cmd in captured:
+            if 'powershell' in cmd[0].lower():
+                return cmd[-1]
+        return ''
+
+    def test_microsoft_included_by_default(self):
+        script = self._get_ps_script(exclude_microsoft=False)
+        assert 'notmatch' not in script.lower()
+
+    def test_microsoft_excluded_when_flag_set(self):
+        script = self._get_ps_script(exclude_microsoft=True)
+        assert 'notmatch' in script.lower()

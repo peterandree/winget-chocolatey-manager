@@ -16,12 +16,16 @@ from typing import List, Dict, Set, Tuple, Optional
 class PackageManager:
     """Main package manager class with error handling"""
 
-    def __init__(self):
+    def __init__(self, exclude_microsoft: bool = False):
         self.winget_apps = {}
         self.choco_packages = set()
         self.installed_programs = []
         self.unmanaged_apps = []
         self.matches = []
+        # When True, Microsoft/Windows-published apps are filtered out during
+        # registry scan, matching the old default behaviour.  Off by default so
+        # apps like VS Code, PowerToys, Windows Terminal etc. are included.
+        self.exclude_microsoft = exclude_microsoft
 
     # Default timeout (seconds) for external commands. choco search can be slow on
     # large repositories, but 60 s is plenty; increase if needed.
@@ -107,15 +111,16 @@ class PackageManager:
             return False
         print(f"✅ Chocolatey is installed (version: {stdout.strip()})")
 
-        # Check for admin privileges
+        # Check for admin privileges — choco install requires elevation; fail fast.
         print("\nChecking administrator privileges...")
         if sys.platform == 'win32':
             import ctypes
             is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
             if not is_admin:
-                print("⚠️  Warning: Not running as Administrator")
-                print("   Registration will require elevation for each package")
-                print("   Consider running this script as Administrator for better experience")
+                print("❌ Not running as Administrator!")
+                print("   choco install requires elevation. Please re-run this script")
+                print("   from an elevated (Administrator) PowerShell or Command Prompt.")
+                return False
             else:
                 print("✅ Running with Administrator privileges")
 
@@ -170,16 +175,27 @@ class PackageManager:
         print("  Step 2/5: Scanning Installed Programs")
         print("="*70)
 
-        ps_script = """
+        # Build the Where-Object filter — Microsoft/Windows apps are included by
+        # default; pass --exclude-microsoft (sets self.exclude_microsoft=True) to
+        # restore the old filtering behaviour.
+        if self.exclude_microsoft:
+            where_filter = (
+                "$_.DisplayName -and "
+                "$_.DisplayName -notmatch '^(Microsoft|Windows|Update|Hotfix|KB[0-9]|Security)'"
+            )
+        else:
+            where_filter = "$_.DisplayName"
+
+        ps_script = f"""
         $UninstallKeys = @(
-            "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
-            "HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
-            "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+            "HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*",
+            "HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*",
+            "HKCU:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*"
         )
 
-        Get-ItemProperty $UninstallKeys -ErrorAction SilentlyContinue | 
-            Where-Object { $_.DisplayName -and $_.DisplayName -notmatch '^(Microsoft|Windows|Update|Hotfix|KB[0-9]|Security)' } | 
-            Select-Object DisplayName, DisplayVersion, Publisher | 
+        Get-ItemProperty $UninstallKeys -ErrorAction SilentlyContinue |
+            Where-Object {{ {where_filter} }} |
+            Select-Object DisplayName, DisplayVersion, Publisher |
             ConvertTo-Json -Compress
         """
 
