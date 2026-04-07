@@ -6,12 +6,18 @@ Adding a new adapter requires **zero changes** to this module.
 """
 from __future__ import annotations
 
+from typing import Callable, Optional
+
 from wincoman.matchers.base import BasePackageManager
+
+ClassifyCb = Callable[[str, Optional[str]], None]
 
 
 def find_unmanaged(
     installed: list[dict],
     managers: list[BasePackageManager],
+    *,
+    on_classify: Optional[ClassifyCb] = None,
 ) -> list[dict]:
     """Return installed programs that are not claimed by any manager.
 
@@ -21,6 +27,9 @@ def find_unmanaged(
         managers: Ordered list of adapters to consult.  A program is
             considered *managed* as soon as **any** adapter's
             :meth:`~BasePackageManager.is_managed` returns ``True``.
+        on_classify: Optional callback invoked per program with
+            ``(display_name, manager_name)`` when managed, or
+            ``(display_name, None)`` when unmanaged.
 
     Returns:
         List of dicts with keys ``name``, ``version``, ``publisher``,
@@ -34,7 +43,16 @@ def find_unmanaged(
         if not display_name:
             continue
 
-        if any(m.is_managed(display_name) for m in managers):
+        claimed_by: Optional[str] = None
+        for m in managers:
+            if m.is_managed(display_name):
+                claimed_by = m.name
+                break
+
+        if on_classify is not None:
+            on_classify(display_name, claimed_by)
+
+        if claimed_by is not None:
             continue
 
         unmanaged.append(

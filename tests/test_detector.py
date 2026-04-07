@@ -1,23 +1,28 @@
-"""Tests for src/wincoman/detector.py (Issue #27)."""
+"""Tests for src/wincoman/detector.py (Issues #27, #35)."""
 from wincoman.detector import find_unmanaged
 
 
 class _AlwaysManaged:
+    name = "always"
+
     def is_managed(self, display_name):
         return True
 
 
 class _NeverManaged:
+    name = "never"
+
     def is_managed(self, display_name):
         return False
 
 
 class _ManagedIf:
-    def __init__(self, name):
-        self._name = name.lower()
+    def __init__(self, mgr_name, app_name):
+        self.name = mgr_name
+        self._app = app_name.lower()
 
     def is_managed(self, display_name):
-        return display_name.lower() == self._name
+        return display_name.lower() == self._app
 
 
 INSTALLED = [
@@ -38,7 +43,7 @@ class TestFindUnmanaged:
 
     def test_returns_unmanaged_subset(self):
         # Only "git" is managed
-        result = find_unmanaged(INSTALLED, [_ManagedIf("git")])
+        result = find_unmanaged(INSTALLED, [_ManagedIf("winget", "git")])
         names = [r["name"] for r in result]
         assert "Git" not in names
         assert "VLC" in names
@@ -48,7 +53,7 @@ class TestFindUnmanaged:
         # Two managers: one claims VLC, one claims Git
         result = find_unmanaged(
             INSTALLED,
-            [_ManagedIf("vlc"), _ManagedIf("git")],
+            [_ManagedIf("scoop", "vlc"), _ManagedIf("winget", "git")],
         )
         names = [r["name"] for r in result]
         assert "VLC" not in names
@@ -86,3 +91,52 @@ class TestFindUnmanaged:
         original_len = len(installed)
         find_unmanaged(installed, [_AlwaysManaged()])
         assert len(installed) == original_len
+
+
+class TestClassifyCallback:
+    """Issue #35: on_classify callback receives (app_name, manager_name|None)."""
+
+    def test_callback_receives_managed_apps_with_manager_name(self):
+        classifications = []
+        find_unmanaged(
+            INSTALLED,
+            [_ManagedIf("winget", "git")],
+            on_classify=lambda name, mgr: classifications.append((name, mgr)),
+        )
+        assert ("Git", "winget") in classifications
+
+    def test_callback_receives_unmanaged_apps_with_none(self):
+        classifications = []
+        find_unmanaged(
+            INSTALLED,
+            [_ManagedIf("winget", "git")],
+            on_classify=lambda name, mgr: classifications.append((name, mgr)),
+        )
+        assert ("VLC", None) in classifications
+        assert ("SomeApp", None) in classifications
+
+    def test_callback_fires_for_every_app(self):
+        classifications = []
+        find_unmanaged(
+            INSTALLED,
+            [_ManagedIf("winget", "git")],
+            on_classify=lambda name, mgr: classifications.append((name, mgr)),
+        )
+        assert len(classifications) == len(INSTALLED)
+
+    def test_no_callback_is_backward_compatible(self):
+        # No on_classify → no error
+        result = find_unmanaged(INSTALLED, [_AlwaysManaged()])
+        assert result == []
+
+    def test_callback_identifies_correct_manager(self):
+        """When multiple managers are tried, the first claiming one is reported."""
+        classifications = []
+        find_unmanaged(
+            INSTALLED,
+            [_ManagedIf("winget", "git"), _ManagedIf("chocolatey", "vlc")],
+            on_classify=lambda name, mgr: classifications.append((name, mgr)),
+        )
+        assert ("Git", "winget") in classifications
+        assert ("VLC", "chocolatey") in classifications
+        assert ("SomeApp", None) in classifications

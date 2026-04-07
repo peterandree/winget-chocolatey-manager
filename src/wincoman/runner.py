@@ -84,10 +84,23 @@ class Orchestrator:
                 return 1
 
             # Step 4: Detect unmanaged apps
-            logging.info("\nStep 4/5: Finding Unmanaged Apps")
+            logging.info("\nStep 4/5: Classifying Installed Apps")
             managers = [self._winget, self._choco, self._scoop]
-            unmanaged_apps = find_unmanaged(installed, managers)
-            logging.info(f"Found {len(unmanaged_apps)} unmanaged apps")
+
+            def _on_classify(app_name: str, manager_name: str | None) -> None:
+                max_w = 40
+                app_display = (
+                    (app_name[: max_w - 3] + "...") if len(app_name) > max_w else app_name
+                )
+                if manager_name:
+                    logging.info(f"  {app_display:<42} managed by {manager_name}")
+                else:
+                    logging.info(f"  {app_display:<42} local only")
+
+            unmanaged_apps = find_unmanaged(
+                installed, managers, on_classify=_on_classify
+            )
+            logging.info(f"\nFound {len(unmanaged_apps)} unmanaged apps")
 
             if not unmanaged_apps:
                 logging.info("All apps are already managed.")
