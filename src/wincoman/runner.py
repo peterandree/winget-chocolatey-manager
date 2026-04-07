@@ -1,7 +1,7 @@
 """Scan orchestrator.
 
 :class:`Orchestrator` wires all pipeline stages in order:
-prerequisites → WinGet → Scoop → registry → Chocolatey list → detector →
+prerequisites → WinGet/Scoop/registry/Chocolatey (parallel) → detector →
 Chocolatey search → cache → display → register.
 
 The manager list is injected via the constructor so integration tests can
@@ -10,6 +10,7 @@ substitute mock adapters for the entire pipeline.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from wincoman.cache import default_cache_path, load_cache, save_cache
@@ -68,30 +69,19 @@ class Orchestrator:
             if not self._check_prerequisites():
                 return 1
 
-            # Step 1: WinGet packages (populates WinGetManager cache)
-            logging.info("\nStep 1/5: Checking WinGet Managed Packages")
-            if not self._winget.is_available():
+            # ── Fan-out: run all independent queries concurrently ────────
+            logging.info("\nSteps 1-3: Querying package managers & registry (parallel)")
+            winget_ok, scoop_ok, choco_ok, installed = self._parallel_queries(cfg)
+
+            if not winget_ok:
                 logging.error("WinGet is not available.")
                 return 1
-            self._winget.list_managed()  # prime cache
-
-            # Step 1b: Scoop (optional)
-            if self._scoop.is_available():
-                self._scoop.list_managed()
-
-            # Step 2: Registry scan
-            logging.info("\nStep 2/5: Scanning Installed Programs")
-            installed = scan_installed_programs(cfg)
             if not installed:
                 logging.error("No installed programs found.")
                 return 1
-
-            # Step 3: Chocolatey list
-            logging.info("\nStep 3/5: Checking Chocolatey Packages")
-            if not self._choco.is_available():
+            if not choco_ok:
                 logging.error("Chocolatey is not available.")
                 return 1
-            self._choco.list_managed()  # prime cache
 
             # Step 4: Detect unmanaged apps
             logging.info("\nStep 4/5: Finding Unmanaged Apps")
@@ -157,3 +147,46 @@ class Orchestrator:
                 )
                 return False
         return True
+
+    def _parallel_queries(
+        self, cfg: ScanConfig
+    ) -> tuple[bool, bool, bool, list[dict]]:
+        """Run WinGet, Scoop, Chocolatey, and registry queries concurrently.
+
+        Returns:
+            ``(winget_ok, scoop_ok, choco_ok, installed_programs)``
+        """
+
+        def _winget_task() -> bool:
+            if not self._winget.is_available():
+                return False
+            self._winget.list_managed()
+            return True
+
+        def _scoop_task() -> bool:
+            if not self._scoop.is_available():
+                return False
+            self._scoop.list_managed()
+            return True
+
+        def _choco_task() -> bool:
+            if not self._choco.is_available():
+                return False
+            self._choco.list_managed()
+            return True
+
+        def _registry_task() -> list[dict]:
+            return scan_installed_programs(cfg)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            f_winget = pool.submit(_winget_task)
+            f_scoop = pool.submit(_scoop_task)
+            f_choco = pool.submit(_choco_task)
+            f_registry = pool.submit(_registry_task)
+
+            winget_ok = f_winget.result()
+            scoop_ok = f_scoop.result()
+            choco_ok = f_choco.result()
+            installed = f_registry.result()
+
+        return winget_ok, scoop_ok, choco_ok, installed

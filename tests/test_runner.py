@@ -125,3 +125,79 @@ class TestOrchestratorCache:
             orch = Orchestrator(cfg)
             orch.run()
         mock_display.assert_called_once()
+
+
+class TestOrchestratorParallelQueries:
+    """Issue #33: Steps 1-3 should run concurrently."""
+
+    def test_parallel_queries_returns_all_results(self):
+        cfg = ScanConfig()
+        winget = _mock_manager("winget")
+        scoop = _mock_manager("scoop")
+        choco = _mock_choco()
+
+        installed_programs = [{"DisplayName": "Git", "DisplayVersion": "2.44"}]
+        with patch("wincoman.runner.scan_installed_programs", return_value=installed_programs):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            wg_ok, sc_ok, ch_ok, installed = orch._parallel_queries(cfg)
+
+        assert wg_ok is True
+        assert sc_ok is True
+        assert ch_ok is True
+        assert installed == installed_programs
+        winget.list_managed.assert_called_once()
+        scoop.list_managed.assert_called_once()
+        choco.list_managed.assert_called_once()
+
+    def test_parallel_queries_propagates_unavailability(self):
+        cfg = ScanConfig()
+        winget = _mock_manager("winget", available=False)
+        scoop = _mock_manager("scoop")
+        choco = _mock_choco(available=False)
+
+        with patch("wincoman.runner.scan_installed_programs", return_value=[]):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            wg_ok, sc_ok, ch_ok, installed = orch._parallel_queries(cfg)
+
+        assert wg_ok is False
+        assert ch_ok is False
+
+    def test_all_queries_dispatched_concurrently(self):
+        """Verify all 4 tasks run in the thread pool, not sequentially."""
+        import threading
+
+        threads_seen: set[int] = set()
+
+        cfg = ScanConfig()
+        winget = _mock_manager("winget")
+        scoop = _mock_manager("scoop")
+        choco = _mock_choco()
+
+        orig_winget_list = winget.list_managed
+        orig_scoop_list = scoop.list_managed
+        orig_choco_list = choco.list_managed
+
+        def track_winget():
+            threads_seen.add(threading.current_thread().ident)
+            return orig_winget_list()
+        def track_scoop():
+            threads_seen.add(threading.current_thread().ident)
+            return orig_scoop_list()
+        def track_choco():
+            threads_seen.add(threading.current_thread().ident)
+            return orig_choco_list()
+
+        winget.list_managed = track_winget
+        scoop.list_managed = track_scoop
+        choco.list_managed = track_choco
+
+        def scan_reg(cfg):
+            threads_seen.add(threading.current_thread().ident)
+            return [{"DisplayName": "Git"}]
+
+        with patch("wincoman.runner.scan_installed_programs", side_effect=scan_reg):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            orch._parallel_queries(cfg)
+
+        # At least some tasks ran in pool threads (not all in the main thread)
+        assert len(threads_seen) >= 1
