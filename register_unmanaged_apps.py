@@ -313,7 +313,8 @@ class PackageManager:
         print("-"*70)
 
         for match in self.matches:
-            app_display = f"{match['app_name'][:37]}..." if len(match['app_name']) > 40 else match['app_name']
+            max_width = 39
+            app_display = (match['app_name'][:max_width - 3] + '...') if len(match['app_name']) > max_width else match['app_name']
             print(f"{app_display:<40} {match['choco_id']:<30}")
 
         print("-"*70)
