@@ -28,6 +28,10 @@ from wincoman.config import ScanConfig as _ScanConfig
 from wincoman.registry import scan_installed_programs as _registry_scan
 from wincoman.cache import save_cache as _cache_save, load_cache as _cache_load
 from wincoman.cache import default_cache_path as _cache_default_path
+from wincoman.detector import find_unmanaged as _detector_find_unmanaged
+from wincoman.reporter import display_results as _reporter_display_results
+from wincoman.reporter import export_to_batch as _reporter_export_to_batch
+from wincoman.installer import register_packages as _installer_register_packages
 
 try:
     from rapidfuzz import fuzz as _fuzz
@@ -289,43 +293,51 @@ class PackageManager:
         return False
 
     def find_unmanaged_apps(self) -> bool:
-        """Find apps not managed by WinGet or Chocolatey"""
+        """Find apps not managed by WinGet or Chocolatey.
+
+        Delegates to :func:`wincoman.detector.find_unmanaged`.
+        """
         logging.info("\n" + "=" * 70)
         logging.info("  Step 4/5: Finding Unmanaged Apps")
         logging.info("=" * 70)
 
-        for program in self.installed_programs:
-            display_name = program.get('DisplayName', '')
-            if not display_name:
-                continue
+        # Build minimal adapter shims from existing state for backward compat
+        class _WingetShim:
+            def __init__(self, pm):
+                self._pm = pm
 
-            normalized = self.normalize_name(display_name)
+            def is_managed(self, display_name):
+                return self._pm._is_managed_by_winget(display_name)
 
-            # Skip if managed by Chocolatey (normalized key lookup)
-            if normalized in self.choco_packages:
-                continue
+        class _ChocoShim:
+            def __init__(self, pm):
+                self._pm = pm
 
-            # Skip if managed by Scoop (normalized key lookup)
-            if normalized in self.scoop_packages or display_name.lower() in self.scoop_packages:
-                continue
+            def is_managed(self, display_name):
+                from wincoman.scoring import normalize_name
+                return normalize_name(display_name) in self._pm.choco_packages
 
-            # Skip if managed by WinGet (fuzzy match against JSON-parsed names)
-            if self._is_managed_by_winget(display_name):
-                continue
+        class _ScoopShim:
+            def __init__(self, pm):
+                self._pm = pm
 
-            self.unmanaged_apps.append({
-                'name': display_name,
-                'version': program.get('DisplayVersion', 'Unknown'),
-                'publisher': program.get('Publisher', 'Unknown'),
-                'normalized': normalized
-            })
+            def is_managed(self, display_name):
+                name_lower = display_name.lower()
+                norm = self._pm.normalize_name(display_name)
+                return (
+                    name_lower in self._pm.scoop_packages
+                    or norm in self._pm.scoop_packages
+                )
+
+        managers = [_WingetShim(self), _ChocoShim(self), _ScoopShim(self)]
+        self.unmanaged_apps = _detector_find_unmanaged(self.installed_programs, managers)
 
         logging.info(f"✅ Found {len(self.unmanaged_apps)} apps not managed by WinGet or Chocolatey")
 
         if not self.unmanaged_apps:
             logging.info("\n🎉 All your apps are already managed!")
             logging.info("   No action needed.")
-            return False  # Nothing to do, but not an error
+            return False
 
         return True
 
@@ -410,76 +422,13 @@ class PackageManager:
         return True
 
     def display_results(self):
-        """Display the discovered matches"""
-        logging.info("\n" + "=" * 70)
-        logging.info("  RESULTS")
-        logging.info("=" * 70)
-        logging.info(f"\nFound {len(self.matches)} apps that can be registered with Chocolatey:\n")
-
-        logging.info("-" * 70)
-        logging.info(f"{'Installed App':<40} {'Chocolatey Package':<30}")
-        logging.info("-" * 70)
-
-        for match in self.matches:
-            max_width = 39
-            app_display = (match['app_name'][:max_width - 3] + '...') if len(match['app_name']) > max_width else match['app_name']
-            mismatch_flag = ' ⚠️ version mismatch' if match.get('version_mismatch') else ''
-            logging.info(f"{app_display:<40} {match['choco_id']:<30}{mismatch_flag}")
-
-        logging.info("-" * 70)
+        """Display the discovered matches. Delegates to :func:`wincoman.reporter.display_results`."""
+        _reporter_display_results(self.matches)
 
     def _register_packages(self, packages_to_register: List[Dict]) -> bool:
-        """Execute choco install for each package in the list.
-
-        Returns True if all registrations succeeded.
-        Respects self.dry_run — in dry-run mode no install commands are run.
-        """
-        logging.info(f"\n{'='*70}")
-        logging.info(f"  Registering {len(packages_to_register)} Package(s)")
-        logging.info("=" * 70)
-
-        successful = []
-        failed = []
-
-        for i, match in enumerate(packages_to_register, 1):
-            logging.info(f"\n[{i}/{len(packages_to_register)}] Registering: {match['app_name']}")
-            logging.info(f"    Chocolatey package: {match['choco_id']}")
-
-            if self.dry_run:
-                logging.info("    [DRY-RUN] Would run: "
-                             f"choco install {match['choco_id']} -y --force")
-                successful.append(match)
-                continue
-
-            cmd = ['choco', 'install', match['choco_id'], '-y', '--force']
-            stdout, stderr, code = self.run_command(cmd)
-
-            if code == 0:
-                logging.info("    ✅ Successfully registered")
-                successful.append(match)
-            else:
-                logging.error("    ❌ Registration failed")
-                if stderr:
-                    logging.error(f"    Error: {stderr[:200]}")
-                failed.append(match)
-
-            if i < len(packages_to_register):
-                time.sleep(0.5)
-
-        logging.info("\n" + "=" * 70)
-        logging.info("  REGISTRATION SUMMARY")
-        logging.info("=" * 70)
-        logging.info(f"\n✅ Successfully registered: {len(successful)}")
-        if failed:
-            logging.warning(f"❌ Failed: {len(failed)}")
-            logging.warning("\nFailed packages:")
-            for match in failed:
-                logging.warning(f"  - {match['app_name']} ({match['choco_id']})")
-            logging.warning("\nYou can try registering these manually with:")
-            for match in failed:
-                logging.warning(f"  choco install {match['choco_id']} -y --force")
-
-        return len(failed) == 0
+        """Execute choco install. Delegates to :func:`wincoman.installer.register_packages`."""
+        config = _ScanConfig(dry_run=self.dry_run)
+        return _installer_register_packages(packages_to_register, config, runner=self.run_command)
 
     def register_packages_interactive(self) -> bool:
         """Interactively register packages with Chocolatey"""
@@ -535,53 +484,9 @@ class PackageManager:
     def export_to_batch(self, output_path: Optional[str] = None) -> bool:
         """Export registration commands to a batch file.
 
-        Args:
-            output_path: Destination file path.  Defaults to a timestamped
-                name in the current directory so repeated runs never silently
-                overwrite a previous export.
+        Delegates to :func:`wincoman.reporter.export_to_batch`.
         """
-        import os
-        from datetime import datetime
-
-        if output_path is None:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_path = f'register_unmanaged_apps_{timestamp}.bat'
-
-        # Prompt the user before overwriting an existing file.
-        if os.path.exists(output_path):
-            while True:
-                response = input(
-                    f"\n⚠️  '{output_path}' already exists. Overwrite? (y/n): "
-                ).strip().lower()
-                if response in ('y', 'n'):
-                    break
-                logging.info("    Please enter 'y' or 'n'.")
-            if response != 'y':
-                logging.info("   Export cancelled.")
-                return False
-
-        try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write('@echo off\r\n')
-                f.write('echo Registering unmanaged apps with Chocolatey...\r\n')
-                f.write('echo.\r\n')
-
-                for match in self.matches:
-                    f.write(f'echo Registering: {match["app_name"]}\r\n')
-                    f.write(f'choco install {match["choco_id"]} -y --force\r\n')
-                    f.write('echo.\r\n')
-
-                f.write('echo.\r\n')
-                f.write('echo Registration complete!\r\n')
-                f.write('pause\r\n')
-
-            logging.info(f"\n✅ Batch file saved: {output_path}")
-            logging.info("   Run this file as Administrator to register all apps")
-            return True
-
-        except Exception as e:
-            logging.error(f"\n❌ Failed to create batch file: {e}")
-            return False
+        return _reporter_export_to_batch(self.matches, output_path)
 
     def run(self, auto: bool = False, export_only: bool = False,
             output_path: Optional[str] = None,
