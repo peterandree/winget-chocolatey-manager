@@ -1,0 +1,72 @@
+"""Scoop package manager adapter.
+
+Implements :class:`BasePackageManager` for Scoop.  Scoop is a list-only source
+(no remote search API from the CLI).  ``is_available()`` returns ``False``
+gracefully when Scoop is not on PATH.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Callable, Optional
+
+from wincoman.matchers.base import BasePackageManager
+from wincoman.scoring import normalize_name
+from wincoman.shell import run_command
+
+
+class ScoopManager(BasePackageManager):
+    """Adapter for the Scoop package manager."""
+
+    def __init__(self, runner: Optional[Callable] = None) -> None:
+        self._runner = runner or run_command
+        self._cache: Optional[set[str]] = None
+
+    @property
+    def name(self) -> str:
+        return "scoop"
+
+    def is_available(self) -> bool:
+        """Return True when scoop is on PATH and responds."""
+        _, _, code = self._runner(["scoop", "--version"], timeout=10)
+        return code == 0
+
+    def list_managed(self) -> set[str]:
+        """Return normalised names of all Scoop-installed packages."""
+        return {normalize_name(n) for n in self._raw_names()}
+
+    def is_managed(self, display_name: str) -> bool:
+        """Return True if *display_name* matches a Scoop package."""
+        raw = self._raw_names()
+        name_lower = display_name.lower()
+        if name_lower in raw:
+            return True
+        norm = normalize_name(display_name)
+        return norm in {normalize_name(n) for n in raw}
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _raw_names(self) -> set[str]:
+        """Return cached set of raw (un-normalised) package names."""
+        if self._cache is not None:
+            return self._cache
+
+        stdout, stderr, code = self._runner(["scoop", "list"], timeout=30)
+        if code != 0:
+            logging.info("Scoop not found or unavailable — skipping Scoop check.")
+            self._cache = set()
+            return self._cache
+
+        names: set[str] = set()
+        for line in stdout.split("\n"):
+            parts = line.split()
+            if parts:
+                name = parts[0].strip().lower()
+                if name and name not in ("name", "----"):
+                    names.add(name)
+
+        self._cache = names
+        if names:
+            logging.info(f"Found {len(names)} packages in Scoop")
+        return self._cache

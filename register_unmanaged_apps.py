@@ -25,6 +25,9 @@ from wincoman.scoring import fuzzy_score as _scoring_fuzzy_score
 from wincoman.scoring import normalize_name as _scoring_normalize_name
 from wincoman.scoring import versions_differ as _scoring_versions_differ
 from wincoman.config import ScanConfig as _ScanConfig
+from wincoman.registry import scan_installed_programs as _registry_scan
+from wincoman.cache import save_cache as _cache_save, load_cache as _cache_load
+from wincoman.cache import default_cache_path as _cache_default_path
 
 try:
     from rapidfuzz import fuzz as _fuzz
@@ -56,8 +59,7 @@ class PackageManager:
     # Default cache file path (~/.wincoman/state.json)
     @staticmethod
     def _default_cache_path() -> str:
-        import os
-        return os.path.join(os.path.expanduser('~'), '.wincoman', 'state.json')
+        return _cache_default_path()
 
     log = logging.getLogger(__name__)
 
@@ -178,68 +180,28 @@ class PackageManager:
         return True
 
     def get_installed_programs(self) -> bool:
-        """Get all installed programs from Windows Registry"""
+        """Get all installed programs from Windows Registry.
+
+        Delegates to :func:`wincoman.registry.scan_installed_programs`.
+        """
         logging.info("\n" + "=" * 70)
         logging.info("  Step 2/5: Scanning Installed Programs")
         logging.info("=" * 70)
 
-        # Build the Where-Object filter — Microsoft/Windows apps are included by
-        # default; pass --exclude-microsoft (sets self.exclude_microsoft=True) to
-        # restore the old filtering behaviour.
-        if self.exclude_microsoft:
-            where_filter = (
-                "$_.DisplayName -and "
-                "$_.DisplayName -notmatch '^(Microsoft|Windows|Update|Hotfix|KB[0-9]|Security)'"
-            )
-        else:
-            where_filter = "$_.DisplayName"
+        config = _ScanConfig(exclude_microsoft=self.exclude_microsoft)
 
-        ps_script = f"""
-        $UninstallKeys = @(
-            "HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*",
-            "HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*",
-            "HKCU:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*"
-        )
+        # Inject run_command so existing tests can still mock PackageManager.run_command
+        def _runner(cmd, **kwargs):
+            return self.run_command(cmd, **kwargs)
 
-        Get-ItemProperty $UninstallKeys -ErrorAction SilentlyContinue |
-            Where-Object {{ {where_filter} }} |
-            Select-Object DisplayName, DisplayVersion, Publisher |
-            ConvertTo-Json -Compress
-        """
-
-        stdout, stderr, code = self.run_command(
-            ['powershell', '-Command', ps_script]
-        )
-
-        if code != 0:
-            logging.error(f"❌ Failed to retrieve installed programs!\n   Error: {stderr}")
+        programs = _registry_scan(config, runner=_runner)
+        if not programs:
+            # _registry_scan already logged the error
             return False
 
-        if not stdout.strip():
-            logging.error("❌ No installed programs found!\n   This might indicate a permission issue.")
-            return False
-
-        try:
-            programs = json.loads(stdout)
-            if isinstance(programs, dict):
-                programs = [programs]
-
-            # Deduplicate by DisplayName (case-insensitive), preferring HKLM 64-bit entries.
-            # The PowerShell script queries hives in order: HKLM 64-bit, HKLM WOW64, HKCU,
-            # so the first occurrence of each name is already the preferred entry.
-            seen: dict = {}
-            for prog in programs:
-                key = (prog.get('DisplayName') or '').strip().lower()
-                if key and key not in seen:
-                    seen[key] = prog
-            self.installed_programs = list(seen.values())
-
-            logging.info(f"✅ Found {len(self.installed_programs)} installed programs")
-            return True
-
-        except json.JSONDecodeError as e:
-            logging.error(f"❌ Failed to parse installed programs data!\n   Error: {e}")
-            return False
+        self.installed_programs = programs
+        logging.info(f"✅ Found {len(self.installed_programs)} installed programs")
+        return True
 
     def get_chocolatey_packages(self) -> bool:
         """Get packages already registered with Chocolatey"""
@@ -294,45 +256,20 @@ class PackageManager:
         return True
 
     def save_cache(self, cache_path: Optional[str] = None) -> None:
-        """Persist scan results to a JSON cache file for fast re-runs."""
-        import os
-        from datetime import datetime, timezone
-
+        """Persist scan results. Delegates to :func:`wincoman.cache.save_cache`."""
         if cache_path is None:
             cache_path = self._default_cache_path()
-
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        state = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'unmanaged_apps': self.unmanaged_apps,
-            'matches': self.matches,
-        }
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, indent=2)
-        logging.info(f"💾 Cache saved: {cache_path}")
+        _cache_save(cache_path, self.unmanaged_apps, self.matches)
 
     def load_cache(self, cache_path: Optional[str] = None) -> bool:
-        """Load scan results from a JSON cache file.  Returns False if unavailable."""
-        import os
-
+        """Load scan results. Delegates to :func:`wincoman.cache.load_cache`."""
         if cache_path is None:
             cache_path = self._default_cache_path()
-
-        if not os.path.exists(cache_path):
-            logging.warning(f"⚠️  Cache file not found: {cache_path}")
+        result = _cache_load(cache_path)
+        if result is None:
             return False
-
-        try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                state = json.load(f)
-            self.unmanaged_apps = state.get('unmanaged_apps', [])
-            self.matches = state.get('matches', [])
-            ts = state.get('timestamp', 'unknown')
-            logging.info(f"📂 Loaded cache from {cache_path} (scanned: {ts})")
-            return True
-        except (json.JSONDecodeError, KeyError) as e:
-            logging.warning(f"⚠️  Failed to load cache: {e}")
-            return False
+        self.unmanaged_apps, self.matches = result
+        return True
 
     @staticmethod
     def _versions_differ(installed: str, choco: str) -> bool:
