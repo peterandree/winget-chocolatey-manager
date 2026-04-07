@@ -167,14 +167,17 @@ class Orchestrator:
             logging.info("DRY-RUN: no packages were installed.")
             return 0
 
+        # Build manager dispatch map
+        mgr_map = {mgr.name: mgr for mgr in self._installable if mgr.is_available()}
+
         # Register
         if cfg.export_only:
             return 0 if export_to_batch(candidates, cfg.output_path) else 1
 
         if cfg.auto:
-            return 0 if register_packages(candidates, cfg) else 1
+            return 0 if register_packages(candidates, cfg, managers=mgr_map) else 1
 
-        return 0 if register_interactive(candidates, cfg) else 1
+        return 0 if register_interactive(candidates, cfg, managers=mgr_map) else 1
 
     # ------------------------------------------------------------------
     # Internal helpers

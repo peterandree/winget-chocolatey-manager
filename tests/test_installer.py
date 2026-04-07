@@ -1,20 +1,27 @@
-"""Tests for src/wincoman/installer.py (Issue #28)."""
+"""Tests for src/wincoman/installer.py (Issues #28, #40)."""
 import logging
+from unittest.mock import MagicMock
 
 from wincoman.config import ScanConfig
 from wincoman.installer import register_packages
-from wincoman.matchers.base import PackageMatch
+from wincoman.matchers.base import AppCandidates, PackageMatch
 
 
-def _match(app_name="Git", pkg_id="git"):
+def _match(app_name="Git", pkg_id="git", manager="chocolatey"):
     return PackageMatch(
         app_name=app_name,
         app_version="2.44",
         pkg_id=pkg_id,
         pkg_version="2.44.0",
         version_mismatch=False,
-        manager="chocolatey",
+        manager=manager,
     )
+
+
+def _candidate(app_name="Git", pkg_id="git", manager="winget", alt_manager=None):
+    primary = _match(app_name, pkg_id, manager)
+    alts = [_match(app_name, f"{pkg_id}-alt", alt_manager)] if alt_manager else []
+    return AppCandidates(app_name, "2.44", primary=primary, alternatives=alts)
 
 
 class TestRegisterPackages:
@@ -105,6 +112,73 @@ class TestRegisterPackages:
     def test_empty_list_returns_true(self):
         result = register_packages([])
         assert result is True
+
+
+class TestRegisterPackagesManagerDispatch:
+    """Issue #40: register_packages routes install to the correct manager adapter."""
+
+    def test_routes_to_winget_manager(self):
+        """When managers dict is provided, winget match calls winget.install()."""
+        winget_mgr = MagicMock()
+        winget_mgr.install.return_value = True
+        managers = {"winget": winget_mgr}
+
+        result = register_packages(
+            [_candidate("Git", "Git.Git", "winget")],
+            managers=managers,
+        )
+        assert result is True
+        winget_mgr.install.assert_called_once()
+        call_args = winget_mgr.install.call_args
+        assert call_args[0][0].pkg_id == "Git.Git"
+
+    def test_routes_to_choco_manager(self):
+        """Chocolatey match calls choco.install()."""
+        choco_mgr = MagicMock()
+        choco_mgr.install.return_value = True
+        managers = {"chocolatey": choco_mgr}
+
+        result = register_packages(
+            [_candidate("Git", "git", "chocolatey")],
+            managers=managers,
+        )
+        assert result is True
+        choco_mgr.install.assert_called_once()
+
+    def test_install_failure_via_manager_returns_false(self):
+        winget_mgr = MagicMock()
+        winget_mgr.install.return_value = False
+        managers = {"winget": winget_mgr}
+
+        result = register_packages(
+            [_candidate("Git", "Git.Git", "winget")],
+            managers=managers,
+        )
+        assert result is False
+
+    def test_dry_run_does_not_call_manager_install(self):
+        winget_mgr = MagicMock()
+        managers = {"winget": winget_mgr}
+        config = ScanConfig(dry_run=True)
+
+        result = register_packages(
+            [_candidate("Git", "Git.Git", "winget")],
+            config,
+            managers=managers,
+        )
+        assert result is True
+        winget_mgr.install.assert_not_called()
+
+    def test_accepts_app_candidates(self):
+        """AppCandidates entries are resolved to primary match."""
+        choco_mgr = MagicMock()
+        choco_mgr.install.return_value = True
+        managers = {"chocolatey": choco_mgr}
+
+        cand = _candidate("VLC", "vlc", "chocolatey")
+        result = register_packages([cand], managers=managers)
+        assert result is True
+        assert choco_mgr.install.call_args[0][0].app_name == "VLC"
 
 
 class TestRegisterInteractive:

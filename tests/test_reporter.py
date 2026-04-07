@@ -1,11 +1,11 @@
-"""Tests for src/wincoman/reporter.py (Issues #28, #37)."""
+"""Tests for src/wincoman/reporter.py (Issues #28, #37, #39, #40)."""
 import logging
 import os
 
 import pytest
 
-from wincoman.matchers.base import PackageMatch
-from wincoman.reporter import ScanSummary, display_results, display_summary, export_to_batch
+from wincoman.matchers.base import AppCandidates, PackageMatch
+from wincoman.reporter import ScanSummary, display_results, display_summary, export_to_batch, install_command
 
 
 def _match(app_name="Git", pkg_id="git", mismatch=False):
@@ -88,6 +88,63 @@ class TestExportToBatch:
         # Pass input_fn=lambda _: "y" so the overwrite prompt doesn't block
         result = export_to_batch([_match()], str(subdir), input_fn=lambda _: "y")
         assert result is False
+
+
+class TestInstallCommand:
+    """Issue #40: install_command() produces correct CLI per manager."""
+
+    def _pm(self, pkg_id, manager):
+        return PackageMatch("App", "1.0", pkg_id, "1.0.0", False, manager)
+
+    def test_winget_command(self):
+        cmd = install_command(self._pm("Git.Git", "winget"))
+        assert "winget install" in cmd
+        assert "--id Git.Git" in cmd
+        assert "--exact" in cmd
+
+    def test_choco_command(self):
+        cmd = install_command(self._pm("git", "chocolatey"))
+        assert "choco install git" in cmd
+        assert "-y" in cmd
+
+    def test_scoop_command(self):
+        cmd = install_command(self._pm("git", "scoop"))
+        assert "scoop install git" in cmd
+
+    def test_unknown_manager_fallback(self):
+        cmd = install_command(self._pm("mypkg", "unknown"))
+        assert "mypkg" in cmd
+
+
+class TestExportToBatchWithCandidates:
+    """Issue #40: export_to_batch uses install_command per manager."""
+
+    def _candidate(self, app, pkg_id, manager):
+        pm = PackageMatch(app, "1.0", pkg_id, "1.0.0", False, manager)
+        return AppCandidates(app, "1.0", primary=pm)
+
+    def test_winget_candidate_writes_winget_command(self, tmp_path):
+        out = tmp_path / "out.bat"
+        export_to_batch([self._candidate("Git", "Git.Git", "winget")], str(out))
+        content = out.read_text()
+        assert "winget install" in content
+        assert "Git.Git" in content
+
+    def test_choco_candidate_writes_choco_command(self, tmp_path):
+        out = tmp_path / "out.bat"
+        export_to_batch([self._candidate("Git", "git", "chocolatey")], str(out))
+        content = out.read_text()
+        assert "choco install git" in content
+
+    def test_mixed_managers_write_correct_commands(self, tmp_path):
+        out = tmp_path / "out.bat"
+        export_to_batch([
+            self._candidate("Git", "Git.Git", "winget"),
+            self._candidate("VLC", "vlc", "chocolatey"),
+        ], str(out))
+        content = out.read_text()
+        assert "winget install" in content
+        assert "choco install vlc" in content
 
 
 class TestScanSummary:

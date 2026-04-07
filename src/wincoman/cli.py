@@ -36,6 +36,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="Path to the JSON cache file.")
     parser.add_argument("--search-workers", type=int, default=5, metavar="N",
                         help="Number of concurrent Chocolatey search threads (default 5).")
+    parser.add_argument("--prefer-manager", metavar="NAME",
+                        help="Prefer a specific manager (winget|chocolatey|scoop) as primary.")
     return parser
 
 
