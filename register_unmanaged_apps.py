@@ -8,9 +8,11 @@ Version 1.1 - Added error handling and direct registration
 
 import subprocess
 import json
+import logging
 import re
 import sys
 import time
+import argparse
 from typing import List, Dict, Set, Tuple, Optional
 
 try:
@@ -22,7 +24,8 @@ except ImportError:  # pragma: no cover
 class PackageManager:
     """Main package manager class with error handling"""
 
-    def __init__(self, exclude_microsoft: bool = False):
+    def __init__(self, exclude_microsoft: bool = False, dry_run: bool = False,
+                 min_score: int = 0):
         self.winget_apps = {}
         self.choco_packages = set()
         self.installed_programs = []
@@ -32,6 +35,13 @@ class PackageManager:
         # registry scan, matching the old default behaviour.  Off by default so
         # apps like VS Code, PowerToys, Windows Terminal etc. are included.
         self.exclude_microsoft = exclude_microsoft
+        # When True, no choco install calls are executed; actions are only previewed.
+        self.dry_run = dry_run
+        # Override the class-level FUZZY_MATCH_THRESHOLD when > 0.
+        if min_score > 0:
+            self.FUZZY_MATCH_THRESHOLD = min_score
+
+    log = logging.getLogger(__name__)
 
     # Default timeout (seconds) for external commands. choco search can be slow on
     # large repositories, but 60 s is plenty; increase if needed.
@@ -60,7 +70,7 @@ class PackageManager:
             return result.stdout, result.stderr, result.returncode
         except subprocess.TimeoutExpired:
             cmd_str = cmd if isinstance(cmd, str) else ' '.join(str(c) for c in cmd)
-            print(f"⚠️  Command timed out after {timeout}s: {cmd_str}")
+            logging.warning(f"⚠️  Command timed out after {timeout}s: {cmd_str}")
             return "", f"Command timed out after {timeout}s", 1
         except FileNotFoundError as e:
             return "", f"Command not found: {cmd[0]}", 1
@@ -108,52 +118,49 @@ class PackageManager:
 
     def check_prerequisites(self) -> bool:
         """Check if required tools are available"""
-        print("\n" + "="*70)
-        print("  Checking Prerequisites")
-        print("="*70)
+        logging.info("\n" + "=" * 70)
+        logging.info("  Checking Prerequisites")
+        logging.info("=" * 70)
 
         # Check WinGet
-        print("\nChecking WinGet...")
+        logging.info("\nChecking WinGet...")
         stdout, stderr, code = self.run_command(['winget', '--version'])
         if code != 0:
-            print("❌ WinGet is not available!")
-            print("   WinGet should be pre-installed on Windows 11.")
-            print("   For Windows 10, install from: https://aka.ms/getwinget")
+            logging.error("❌ WinGet is not available!")
+            logging.error("   WinGet should be pre-installed on Windows 11.")
+            logging.error("   For Windows 10, install from: https://aka.ms/getwinget")
             return False
-        print(f"✅ WinGet is installed (version: {stdout.strip()})")
+        logging.info(f"✅ WinGet is installed (version: {stdout.strip()})")
 
         # Check Chocolatey
-        print("\nChecking Chocolatey...")
+        logging.info("\nChecking Chocolatey...")
         stdout, stderr, code = self.run_command(['choco', '--version'])
         if code != 0:
-            print("❌ Chocolatey is not installed!")
-            print("   Install from: https://chocolatey.org/install")
-            print("   Or run: Set-ExecutionPolicy Bypass -Scope Process -Force; ")
-            print("   [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; ")
-            print("   iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))")
+            logging.error("❌ Chocolatey is not installed!")
+            logging.error("   Install from: https://chocolatey.org/install")
             return False
-        print(f"✅ Chocolatey is installed (version: {stdout.strip()})")
+        logging.info(f"✅ Chocolatey is installed (version: {stdout.strip()})")
 
         # Check for admin privileges — choco install requires elevation; fail fast.
-        print("\nChecking administrator privileges...")
+        logging.info("\nChecking administrator privileges...")
         if sys.platform == 'win32':
             import ctypes
             is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
             if not is_admin:
-                print("❌ Not running as Administrator!")
-                print("   choco install requires elevation. Please re-run this script")
-                print("   from an elevated (Administrator) PowerShell or Command Prompt.")
+                logging.error("❌ Not running as Administrator!")
+                logging.error("   choco install requires elevation. Please re-run this script")
+                logging.error("   from an elevated (Administrator) PowerShell or Command Prompt.")
                 return False
             else:
-                print("✅ Running with Administrator privileges")
+                logging.info("✅ Running with Administrator privileges")
 
         return True
 
     def get_winget_packages(self) -> bool:
         """Get all packages managed by WinGet"""
-        print("\n" + "="*70)
-        print("  Step 1/5: Checking WinGet Managed Packages")
-        print("="*70)
+        logging.info("\n" + "=" * 70)
+        logging.info("  Step 1/5: Checking WinGet Managed Packages")
+        logging.info("=" * 70)
 
         # --output json is available since WinGet 1.2 and gives reliable structured
         # output that isn't affected by fixed-width column formatting.
@@ -162,14 +169,13 @@ class PackageManager:
         )
 
         if code != 0:
-            print(f"❌ Failed to get WinGet packages!")
-            print(f"   Error: {stderr}")
+            logging.error(f"❌ Failed to get WinGet packages!\n   Error: {stderr}")
             return False
 
         try:
             packages = json.loads(stdout)
         except (json.JSONDecodeError, ValueError):
-            print("❌ Failed to parse WinGet JSON output!")
+            logging.error("❌ Failed to parse WinGet JSON output!")
             return False
 
         for pkg in packages:
@@ -179,18 +185,18 @@ class PackageManager:
                 self.winget_apps[name.lower()] = {'name': name, 'id': pkg.get('Id', '')}
 
         if not self.winget_apps:
-            print("⚠️  Warning: No WinGet packages detected")
-            print("   This is unusual. Continuing anyway...")
+            logging.warning("⚠️  Warning: No WinGet packages detected")
+            logging.warning("   This is unusual. Continuing anyway...")
         else:
-            print(f"✅ Found {len(self.winget_apps)} apps managed by WinGet")
+            logging.info(f"✅ Found {len(self.winget_apps)} apps managed by WinGet")
 
         return True
 
     def get_installed_programs(self) -> bool:
         """Get all installed programs from Windows Registry"""
-        print("\n" + "="*70)
-        print("  Step 2/5: Scanning Installed Programs")
-        print("="*70)
+        logging.info("\n" + "=" * 70)
+        logging.info("  Step 2/5: Scanning Installed Programs")
+        logging.info("=" * 70)
 
         # Build the Where-Object filter — Microsoft/Windows apps are included by
         # default; pass --exclude-microsoft (sets self.exclude_microsoft=True) to
@@ -221,13 +227,11 @@ class PackageManager:
         )
 
         if code != 0:
-            print(f"❌ Failed to retrieve installed programs!")
-            print(f"   Error: {stderr}")
+            logging.error(f"❌ Failed to retrieve installed programs!\n   Error: {stderr}")
             return False
 
         if not stdout.strip():
-            print("❌ No installed programs found!")
-            print("   This might indicate a permission issue.")
+            logging.error("❌ No installed programs found!\n   This might indicate a permission issue.")
             return False
 
         try:
@@ -245,19 +249,18 @@ class PackageManager:
                     seen[key] = prog
             self.installed_programs = list(seen.values())
 
-            print(f"✅ Found {len(self.installed_programs)} installed programs")
+            logging.info(f"✅ Found {len(self.installed_programs)} installed programs")
             return True
 
         except json.JSONDecodeError as e:
-            print(f"❌ Failed to parse installed programs data!")
-            print(f"   Error: {e}")
+            logging.error(f"❌ Failed to parse installed programs data!\n   Error: {e}")
             return False
 
     def get_chocolatey_packages(self) -> bool:
         """Get packages already registered with Chocolatey"""
-        print("\n" + "="*70)
-        print("  Step 3/5: Checking Chocolatey Packages")
-        print("="*70)
+        logging.info("\n" + "=" * 70)
+        logging.info("  Step 3/5: Checking Chocolatey Packages")
+        logging.info("=" * 70)
 
         # --limit-output is deprecated in Chocolatey v2.x; use bare 'choco list' there.
         choco_major = self.get_choco_major_version()
@@ -269,8 +272,7 @@ class PackageManager:
         stdout, stderr, code = self.run_command(cmd)
 
         if code != 0:
-            print(f"❌ Failed to get Chocolatey packages!")
-            print(f"   Error: {stderr}")
+            logging.error(f"❌ Failed to get Chocolatey packages!\n   Error: {stderr}")
             return False
 
         for line in stdout.split('\n'):
@@ -284,7 +286,7 @@ class PackageManager:
                 if normalized:
                     self.choco_packages.add(normalized)
 
-        print(f"✅ Found {len(self.choco_packages)} packages in Chocolatey")
+        logging.info(f"✅ Found {len(self.choco_packages)} packages in Chocolatey")
         return True
 
     def _is_managed_by_winget(self, display_name: str) -> bool:
@@ -301,9 +303,9 @@ class PackageManager:
 
     def find_unmanaged_apps(self) -> bool:
         """Find apps not managed by WinGet or Chocolatey"""
-        print("\n" + "="*70)
-        print("  Step 4/5: Finding Unmanaged Apps")
-        print("="*70)
+        logging.info("\n" + "=" * 70)
+        logging.info("  Step 4/5: Finding Unmanaged Apps")
+        logging.info("=" * 70)
 
         for program in self.installed_programs:
             display_name = program.get('DisplayName', '')
@@ -327,21 +329,21 @@ class PackageManager:
                 'normalized': normalized
             })
 
-        print(f"✅ Found {len(self.unmanaged_apps)} apps not managed by WinGet or Chocolatey")
+        logging.info(f"✅ Found {len(self.unmanaged_apps)} apps not managed by WinGet or Chocolatey")
 
         if not self.unmanaged_apps:
-            print("\n🎉 All your apps are already managed!")
-            print("   No action needed.")
+            logging.info("\n🎉 All your apps are already managed!")
+            logging.info("   No action needed.")
             return False  # Nothing to do, but not an error
 
         return True
 
     def search_chocolatey_matches(self) -> bool:
         """Search for Chocolatey packages for unmanaged apps"""
-        print("\n" + "="*70)
-        print("  Step 5/5: Searching Chocolatey Repository")
-        print("="*70)
-        print("\nThis may take a few minutes...")
+        logging.info("\n" + "=" * 70)
+        logging.info("  Step 5/5: Searching Chocolatey Repository")
+        logging.info("=" * 70)
+        logging.info("\nThis may take a few minutes...")
 
         # --limit-output is deprecated in Chocolatey v2.x.
         choco_major = self.get_choco_major_version()
@@ -350,7 +352,7 @@ class PackageManager:
         total = len(self.unmanaged_apps)
         for i, app in enumerate(self.unmanaged_apps, 1):
             if i % 5 == 0 or i == total:
-                print(f"Progress: {i}/{total} apps processed...")
+                logging.info(f"Progress: {i}/{total} apps processed...")
 
             # Try exact search first
             stdout, stderr, code = self.run_command(
@@ -405,51 +407,104 @@ class PackageManager:
                 time.sleep(self.SEARCH_DELAY)
 
         if not self.matches:
-            print("\n⚠️  No matching Chocolatey packages found.")
-            print("   Your apps might be too specialized or not available in Chocolatey.")
+            logging.warning("\n⚠️  No matching Chocolatey packages found.")
+            logging.warning("   Your apps might be too specialized or not available in Chocolatey.")
             return False
 
-        print(f"\n✅ Found {len(self.matches)} matching packages in Chocolatey")
+        logging.info(f"\n✅ Found {len(self.matches)} matching packages in Chocolatey")
         return True
 
     def display_results(self):
         """Display the discovered matches"""
-        print("\n" + "="*70)
-        print("  RESULTS")
-        print("="*70)
-        print(f"\nFound {len(self.matches)} apps that can be registered with Chocolatey:\n")
+        logging.info("\n" + "=" * 70)
+        logging.info("  RESULTS")
+        logging.info("=" * 70)
+        logging.info(f"\nFound {len(self.matches)} apps that can be registered with Chocolatey:\n")
 
-        print("-"*70)
-        print(f"{'Installed App':<40} {'Chocolatey Package':<30}")
-        print("-"*70)
+        logging.info("-" * 70)
+        logging.info(f"{'Installed App':<40} {'Chocolatey Package':<30}")
+        logging.info("-" * 70)
 
         for match in self.matches:
             max_width = 39
             app_display = (match['app_name'][:max_width - 3] + '...') if len(match['app_name']) > max_width else match['app_name']
-            print(f"{app_display:<40} {match['choco_id']:<30}")
+            logging.info(f"{app_display:<40} {match['choco_id']:<30}")
 
-        print("-"*70)
+        logging.info("-" * 70)
+
+    def _register_packages(self, packages_to_register: List[Dict]) -> bool:
+        """Execute choco install for each package in the list.
+
+        Returns True if all registrations succeeded.
+        Respects self.dry_run — in dry-run mode no install commands are run.
+        """
+        logging.info(f"\n{'='*70}")
+        logging.info(f"  Registering {len(packages_to_register)} Package(s)")
+        logging.info("=" * 70)
+
+        successful = []
+        failed = []
+
+        for i, match in enumerate(packages_to_register, 1):
+            logging.info(f"\n[{i}/{len(packages_to_register)}] Registering: {match['app_name']}")
+            logging.info(f"    Chocolatey package: {match['choco_id']}")
+
+            if self.dry_run:
+                logging.info("    [DRY-RUN] Would run: "
+                             f"choco install {match['choco_id']} -y --force")
+                successful.append(match)
+                continue
+
+            cmd = ['choco', 'install', match['choco_id'], '-y', '--force']
+            stdout, stderr, code = self.run_command(cmd)
+
+            if code == 0:
+                logging.info("    ✅ Successfully registered")
+                successful.append(match)
+            else:
+                logging.error("    ❌ Registration failed")
+                if stderr:
+                    logging.error(f"    Error: {stderr[:200]}")
+                failed.append(match)
+
+            if i < len(packages_to_register):
+                time.sleep(0.5)
+
+        logging.info("\n" + "=" * 70)
+        logging.info("  REGISTRATION SUMMARY")
+        logging.info("=" * 70)
+        logging.info(f"\n✅ Successfully registered: {len(successful)}")
+        if failed:
+            logging.warning(f"❌ Failed: {len(failed)}")
+            logging.warning("\nFailed packages:")
+            for match in failed:
+                logging.warning(f"  - {match['app_name']} ({match['choco_id']})")
+            logging.warning("\nYou can try registering these manually with:")
+            for match in failed:
+                logging.warning(f"  choco install {match['choco_id']} -y --force")
+
+        return len(failed) == 0
 
     def register_packages_interactive(self) -> bool:
         """Interactively register packages with Chocolatey"""
-        print("\n" + "="*70)
-        print("  REGISTRATION")
-        print("="*70)
+        logging.info("\n" + "=" * 70)
+        logging.info("  REGISTRATION")
+        logging.info("=" * 70)
 
-        print("\nRegistration options:")
-        print("  1. Register all packages automatically")
-        print("  2. Review and select packages individually")
-        print("  3. Export to batch file (manual registration)")
-        print("  4. Exit without registering")
+        logging.info("\nRegistration options:")
+        logging.info("  1. Register all packages automatically")
+        logging.info("  2. Review and select packages individually")
+        logging.info("  3. Export to batch file (manual registration)")
+        logging.info("  4. Exit without registering")
 
         while True:
             choice = input("\nSelect option (1-4): ").strip()
             if choice in ['1', '2', '3', '4']:
                 break
-            print("Invalid choice. Please enter 1, 2, 3, or 4.")
+            logging.info("Invalid choice. Please enter 1, 2, 3, or 4.")
 
         if choice == '4':
-            print("\nExiting without registration.")
+            logging.info("\nExiting without registration.")
             return True
 
         if choice == '3':
@@ -459,68 +514,27 @@ class PackageManager:
 
         if choice == '1':
             packages_to_register = self.matches
-            print(f"\nRegistering all {len(packages_to_register)} packages...")
+            logging.info(f"\nRegistering all {len(packages_to_register)} packages...")
 
         elif choice == '2':
-            print("\nSelect packages to register:")
+            logging.info("\nSelect packages to register:")
             for i, match in enumerate(self.matches, 1):
                 while True:
-                    response = input(f"  [{i}/{len(self.matches)}] Register {match['app_name']}? (y/n): ").strip().lower()
+                    response = input(
+                        f"  [{i}/{len(self.matches)}] Register {match['app_name']}? (y/n): "
+                    ).strip().lower()
                     if response in ['y', 'n']:
                         break
-                    print("      Please enter 'y' or 'n'")
+                    logging.info("      Please enter 'y' or 'n'")
 
                 if response == 'y':
                     packages_to_register.append(match)
 
             if not packages_to_register:
-                print("\nNo packages selected. Exiting.")
+                logging.info("\nNo packages selected. Exiting.")
                 return True
 
-        # Register selected packages
-        print(f"\n{'='*70}")
-        print(f"  Registering {len(packages_to_register)} Package(s)")
-        print("="*70)
-
-        successful = []
-        failed = []
-
-        for i, match in enumerate(packages_to_register, 1):
-            print(f"\n[{i}/{len(packages_to_register)}] Registering: {match['app_name']}")
-            print(f"    Chocolatey package: {match['choco_id']}")
-
-            cmd = ['choco', 'install', match['choco_id'], '-y', '--force']
-            stdout, stderr, code = self.run_command(cmd)
-
-            if code == 0:
-                print("    ✅ Successfully registered")
-                successful.append(match)
-            else:
-                print("    ❌ Registration failed")
-                if stderr:
-                    print(f"    Error: {stderr[:200]}")  # Show first 200 chars of error
-                failed.append(match)
-
-            # Brief pause to avoid overwhelming the system
-            if i < len(packages_to_register):
-                time.sleep(0.5)
-
-        # Summary
-        print("\n" + "="*70)
-        print("  REGISTRATION SUMMARY")
-        print("="*70)
-        print(f"\n✅ Successfully registered: {len(successful)}")
-        print(f"❌ Failed: {len(failed)}")
-
-        if failed:
-            print("\nFailed packages:")
-            for match in failed:
-                print(f"  - {match['app_name']} ({match['choco_id']})")
-            print("\nYou can try registering these manually with:")
-            for match in failed:
-                print(f"  choco install {match['choco_id']} -y --force")
-
-        return len(failed) == 0
+        return self._register_packages(packages_to_register)
 
     def export_to_batch(self, output_path: Optional[str] = None) -> bool:
         """Export registration commands to a batch file.
@@ -545,9 +559,9 @@ class PackageManager:
                 ).strip().lower()
                 if response in ('y', 'n'):
                     break
-                print("    Please enter 'y' or 'n'.")
+                logging.info("    Please enter 'y' or 'n'.")
             if response != 'y':
-                print("   Export cancelled.")
+                logging.info("   Export cancelled.")
                 return False
 
         try:
@@ -565,20 +579,21 @@ class PackageManager:
                 f.write('echo Registration complete!\r\n')
                 f.write('pause\r\n')
 
-            print(f"\n✅ Batch file saved: {output_path}")
-            print("   Run this file as Administrator to register all apps")
+            logging.info(f"\n✅ Batch file saved: {output_path}")
+            logging.info("   Run this file as Administrator to register all apps")
             return True
 
         except Exception as e:
-            print(f"\n❌ Failed to create batch file: {e}")
+            logging.error(f"\n❌ Failed to create batch file: {e}")
             return False
 
-    def run(self) -> int:
+    def run(self, auto: bool = False, export_only: bool = False,
+            output_path: Optional[str] = None) -> int:
         """Main execution flow"""
-        print("="*70)
-        print("  Chocolatey Registration for Apps Not Managed by WinGet")
-        print("  Version 1.1 - With Error Handling & Direct Registration")
-        print("="*70)
+        logging.info("=" * 70)
+        logging.info("  Chocolatey Registration for Apps Not Managed by WinGet")
+        logging.info("  Version 1.2 - With argparse, logging, and dry-run support")
+        logging.info("=" * 70)
 
         # Check prerequisites
         if not self.check_prerequisites():
@@ -586,53 +601,135 @@ class PackageManager:
 
         # Step 1: Get WinGet packages
         if not self.get_winget_packages():
-            print("\n❌ Failed at Step 1. Cannot continue.")
+            logging.error("\n❌ Failed at Step 1. Cannot continue.")
             return 1
 
         # Step 2: Get installed programs
         if not self.get_installed_programs():
-            print("\n❌ Failed at Step 2. Cannot continue.")
+            logging.error("\n❌ Failed at Step 2. Cannot continue.")
             return 1
 
         # Step 3: Get Chocolatey packages
         if not self.get_chocolatey_packages():
-            print("\n❌ Failed at Step 3. Cannot continue.")
+            logging.error("\n❌ Failed at Step 3. Cannot continue.")
             return 1
 
         # Step 4: Find unmanaged apps
         if not self.find_unmanaged_apps():
-            # This is not necessarily an error - might just mean everything is managed
             return 0
 
         # Step 5: Search for matches
         if not self.search_chocolatey_matches():
-            # No matches found, but not an error
             return 0
 
         # Display results
         self.display_results()
 
+        if self.dry_run:
+            logging.info("\n🔍 DRY-RUN: no packages were installed.")
+            return 0
+
         # Registration
+        if export_only:
+            return 0 if self.export_to_batch(output_path=output_path) else 1
+
+        if auto:
+            return 0 if self._register_packages(self.matches) else 1
+
         if not self.register_packages_interactive():
-            print("\n⚠️  Registration completed with some errors.")
+            logging.warning("\n⚠️  Registration completed with some errors.")
             return 1
 
-        print("\n" + "="*70)
-        print("✅ Script completed successfully!")
-        print("="*70)
+        logging.info("\n" + "=" * 70)
+        logging.info("✅ Script completed successfully!")
+        logging.info("=" * 70)
         return 0
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog='register_unmanaged_apps',
+        description='Find apps not managed by WinGet/Chocolatey and register them.',
+    )
+    parser.add_argument(
+        '--auto', action='store_true',
+        help='Register all matches without prompting.',
+    )
+    parser.add_argument(
+        '--dry-run', action='store_true',
+        help='Preview all actions without executing any choco install calls.',
+    )
+    parser.add_argument(
+        '--export-only', action='store_true',
+        help='Always write a batch file; skip the interactive prompt.',
+    )
+    parser.add_argument(
+        '--output', metavar='PATH',
+        help='Batch file output path (used with --export-only). '
+             'Defaults to a timestamped name.',
+    )
+    parser.add_argument(
+        '--log-file', metavar='PATH',
+        help='Write log output to this file in addition to stdout.',
+    )
+    parser.add_argument(
+        '--quiet', '-q', action='store_true',
+        help='Suppress INFO-level output (only warnings and errors are shown).',
+    )
+    parser.add_argument(
+        '--exclude-microsoft', action='store_true',
+        help='Filter out Microsoft/Windows-published apps (restores old behaviour).',
+    )
+    parser.add_argument(
+        '--min-score', type=int, default=0, metavar='INT',
+        help='Minimum fuzzy-match confidence threshold (0-100, default 60).',
+    )
+    return parser
+
+
+def _configure_logging(quiet: bool, log_file: Optional[str]) -> None:
+    level = logging.WARNING if quiet else logging.INFO
+    root = logging.getLogger()
+    # Remove any existing handlers so we can reconfigure (e.g. in tests).
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+    root.setLevel(level)
+    formatter = logging.Formatter('%(message)s')
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    root.addHandler(sh)
+    if log_file:
+        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh.setFormatter(formatter)
+        root.addHandler(fh)
+
 
 def main():
     """Entry point"""
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    _configure_logging(quiet=args.quiet, log_file=args.log_file)
+
     try:
-        manager = PackageManager()
-        exit_code = manager.run()
+        manager = PackageManager(
+            exclude_microsoft=args.exclude_microsoft,
+            dry_run=args.dry_run,
+            min_score=args.min_score,
+        )
+        if args.dry_run:
+            logging.info("🔍 DRY-RUN mode — no packages will be installed.")
+
+        exit_code = manager.run(
+            auto=args.auto,
+            export_only=args.export_only,
+            output_path=args.output,
+        )
         sys.exit(exit_code)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Interrupted by user. Exiting...")
+        logging.warning("\n⚠️  Interrupted by user. Exiting...")
         sys.exit(130)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        logging.error(f"\n❌ Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

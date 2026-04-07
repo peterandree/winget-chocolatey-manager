@@ -21,41 +21,43 @@ class TestDisplayResults:
         pm.matches = matches
         return pm
 
-    def test_short_name_not_truncated(self, capsys):
+    def test_short_name_not_truncated(self, caplog):
+        import logging as _logging
         pm = self._manager_with_matches([{'app_name': 'ShortApp', 'choco_id': 'shortapp'}])
-        pm.display_results()
-        out = capsys.readouterr().out
-        assert 'ShortApp' in out
-        assert '...' not in out
+        with caplog.at_level(_logging.INFO):
+            pm.display_results()
+        assert 'ShortApp' in caplog.text
+        assert '...' not in caplog.text
 
-    def test_exactly_39_chars_not_truncated(self, capsys):
+    def test_exactly_39_chars_not_truncated(self, caplog):
+        import logging as _logging
         name = 'A' * 39
         pm = self._manager_with_matches([{'app_name': name, 'choco_id': 'pkg'}])
-        pm.display_results()
-        out = capsys.readouterr().out
-        assert '...' not in out
+        with caplog.at_level(_logging.INFO):
+            pm.display_results()
+        assert '...' not in caplog.text
 
-    def test_name_40_chars_is_truncated(self, capsys):
+    def test_name_40_chars_is_truncated(self, caplog):
+        import logging as _logging
         name = 'A' * 40
         pm = self._manager_with_matches([{'app_name': name, 'choco_id': 'pkg'}])
-        pm.display_results()
-        out = capsys.readouterr().out
-        assert '...' in out
+        with caplog.at_level(_logging.INFO):
+            pm.display_results()
+        assert '...' in caplog.text
 
-    def test_truncated_display_fits_in_40_chars(self, capsys):
+    def test_truncated_display_fits_in_40_chars(self, caplog):
+        import logging as _logging
         name = 'A' * 80
         pm = self._manager_with_matches([{'app_name': name, 'choco_id': 'pkg'}])
-        pm.display_results()
-        out = capsys.readouterr().out
-        # Find the line with truncated name
-        for line in out.split('\n'):
-            if '...' in line and 'pkg' in line:
-                # The display portion before choco_id column should be <= 40 chars
-                # The format is f"{app_display:<40} {choco_id:<30}"
-                # So the app_display part occupies positions 0-39
-                display_part = line[:40].rstrip()
-                assert len(display_part) <= 39, f"Truncated name overflows column: '{display_part}'"
-                break
+        with caplog.at_level(_logging.INFO):
+            pm.display_results()
+        # caplog.records gives us the raw message without log-level prefixes
+        messages = [r.getMessage() for r in caplog.records]
+        table_line = next((m for m in messages if '...' in m and 'pkg' in m), None)
+        assert table_line is not None, 'No truncated table line found in log output'
+        # The table format is "{app_display:<40} {choco_id:<30}"
+        app_display = table_line[:40].rstrip()
+        assert len(app_display) <= 39, f"Truncated name overflows column: '{app_display}'"
 
 
 # ---------------------------------------------------------------------------
@@ -242,8 +244,9 @@ class TestChocoInstallNoSkipPS:
         monkeypatch.chdir(tmp_path)
         pm = PackageManager()
         pm.matches = [{'app_name': 'Git', 'choco_id': 'git', 'app_version': '2.44', 'choco_version': '2.44'}]
-        pm.export_to_batch()
-        content = (tmp_path / 'register_unmanaged_apps.bat').read_text()
+        out_path = tmp_path / 'out.bat'
+        pm.export_to_batch(output_path=str(out_path))
+        content = out_path.read_text()
         assert '-n' not in content
 
 
@@ -376,3 +379,81 @@ class TestExportToBatch:
             result = pm.export_to_batch(output_path=str(out))
         assert result is False
         assert out.read_text() == 'old content'
+
+
+# ---------------------------------------------------------------------------
+# Issue #8 -- argparse
+# ---------------------------------------------------------------------------
+
+class TestArgParser:
+    def test_auto_flag_parsed(self):
+        from register_unmanaged_apps import _build_arg_parser
+        args = _build_arg_parser().parse_args(['--auto'])
+        assert args.auto is True
+
+    def test_dry_run_flag_parsed(self):
+        from register_unmanaged_apps import _build_arg_parser
+        args = _build_arg_parser().parse_args(['--dry-run'])
+        assert args.dry_run is True
+
+    def test_export_only_flag_parsed(self):
+        from register_unmanaged_apps import _build_arg_parser
+        args = _build_arg_parser().parse_args(['--export-only'])
+        assert args.export_only is True
+
+    def test_min_score_parsed(self):
+        from register_unmanaged_apps import _build_arg_parser
+        args = _build_arg_parser().parse_args(['--min-score', '75'])
+        assert args.min_score == 75
+
+    def test_exclude_microsoft_parsed(self):
+        from register_unmanaged_apps import _build_arg_parser
+        args = _build_arg_parser().parse_args(['--exclude-microsoft'])
+        assert args.exclude_microsoft is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #7 -- dry-run flag
+# ---------------------------------------------------------------------------
+
+class TestDryRun:
+    def test_dry_run_skips_choco_install(self):
+        pm = PackageManager(dry_run=True)
+        pm.matches = [{'app_name': 'Git', 'choco_id': 'git', 'app_version': '2.44', 'choco_version': '2.44'}]
+        captured_cmds = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmds.append(list(cmd))
+            return '', '', 0
+
+        with patch.object(PackageManager, 'run_command', side_effect=fake_run):
+            pm._register_packages(pm.matches)
+
+        install_cmds = [c for c in captured_cmds if 'install' in c]
+        assert install_cmds == [], 'choco install should not run in dry-run mode'
+
+    def test_dry_run_reports_success(self):
+        pm = PackageManager(dry_run=True)
+        pm.matches = [{'app_name': 'Git', 'choco_id': 'git', 'app_version': '2.44', 'choco_version': '2.44'}]
+        result = pm._register_packages(pm.matches)
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #13 -- logging infrastructure
+# ---------------------------------------------------------------------------
+
+class TestLogging:
+    def test_quiet_flag_suppresses_info(self):
+        from register_unmanaged_apps import _configure_logging
+        import logging as _logging
+        _configure_logging(quiet=True, log_file=None)
+        assert _logging.getLogger().level == _logging.WARNING
+
+    def test_normal_mode_shows_info(self):
+        from register_unmanaged_apps import _configure_logging
+        import logging as _logging
+        # Reset then configure at INFO level
+        _logging.getLogger().handlers.clear()
+        _configure_logging(quiet=False, log_file=None)
+        assert _logging.getLogger().level == _logging.INFO
