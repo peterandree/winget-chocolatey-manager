@@ -522,12 +522,36 @@ class PackageManager:
 
         return len(failed) == 0
 
-    def export_to_batch(self) -> bool:
-        """Export registration commands to a batch file"""
-        batch_file = 'register_unmanaged_apps.bat'
+    def export_to_batch(self, output_path: Optional[str] = None) -> bool:
+        """Export registration commands to a batch file.
+
+        Args:
+            output_path: Destination file path.  Defaults to a timestamped
+                name in the current directory so repeated runs never silently
+                overwrite a previous export.
+        """
+        import os
+        from datetime import datetime
+
+        if output_path is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_path = f'register_unmanaged_apps_{timestamp}.bat'
+
+        # Prompt the user before overwriting an existing file.
+        if os.path.exists(output_path):
+            while True:
+                response = input(
+                    f"\n⚠️  '{output_path}' already exists. Overwrite? (y/n): "
+                ).strip().lower()
+                if response in ('y', 'n'):
+                    break
+                print("    Please enter 'y' or 'n'.")
+            if response != 'y':
+                print("   Export cancelled.")
+                return False
 
         try:
-            with open(batch_file, 'w', encoding='utf-8') as f:
+            with open(output_path, 'w', encoding='utf-8') as f:
                 f.write('@echo off\r\n')
                 f.write('echo Registering unmanaged apps with Chocolatey...\r\n')
                 f.write('echo.\r\n')
@@ -541,7 +565,7 @@ class PackageManager:
                 f.write('echo Registration complete!\r\n')
                 f.write('pause\r\n')
 
-            print(f"\n✅ Batch file saved: {batch_file}")
+            print(f"\n✅ Batch file saved: {output_path}")
             print("   Run this file as Administrator to register all apps")
             return True
 

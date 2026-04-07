@@ -333,3 +333,46 @@ class TestApproxSearchScoring:
         choco_out = 'completelydifferentapp|1.0\n'
         matches = self._run_search('7-Zip', choco_out)
         assert matches == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #16 -- export_to_batch silently overwrites previous export
+# ---------------------------------------------------------------------------
+
+class TestExportToBatch:
+    def _pm_with_matches(self):
+        pm = PackageManager()
+        pm.matches = [{'app_name': 'Git', 'choco_id': 'git'}]
+        return pm
+
+    def test_creates_timestamped_file_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        pm = self._pm_with_matches()
+        pm.export_to_batch()
+        bat_files = list(tmp_path.glob('register_unmanaged_apps_*.bat'))
+        assert len(bat_files) == 1
+
+    def test_explicit_path_used_when_provided(self, tmp_path):
+        pm = self._pm_with_matches()
+        out = tmp_path / 'out.bat'
+        pm.export_to_batch(output_path=str(out))
+        assert out.exists()
+
+    def test_prompts_before_overwrite(self, tmp_path):
+        pm = self._pm_with_matches()
+        out = tmp_path / 'out.bat'
+        out.write_text('old content')
+        # User confirms overwrite
+        with patch('builtins.input', return_value='y'):
+            result = pm.export_to_batch(output_path=str(out))
+        assert result is True
+        assert 'choco install' in out.read_text()
+
+    def test_cancels_on_no(self, tmp_path):
+        pm = self._pm_with_matches()
+        out = tmp_path / 'out.bat'
+        out.write_text('old content')
+        with patch('builtins.input', return_value='n'):
+            result = pm.export_to_batch(output_path=str(out))
+        assert result is False
+        assert out.read_text() == 'old content'
