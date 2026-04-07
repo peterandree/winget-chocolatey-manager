@@ -10,8 +10,10 @@ import json
 import logging
 from typing import Callable, Optional
 
+from rapidfuzz import fuzz, process
+
 from wincoman.matchers.base import BasePackageManager
-from wincoman.scoring import fuzzy_score, normalize_name
+from wincoman.scoring import normalize_name
 from wincoman.shell import run_command
 
 _DEFAULT_MIN_SCORE = 60
@@ -46,15 +48,25 @@ class WinGetManager(BasePackageManager):
         return {normalize_name(n) for n in self._get_name_map()}
 
     def is_managed(self, display_name: str) -> bool:
-        """Return True if *display_name* matches a WinGet-managed package."""
+        """Return True if *display_name* matches a WinGet-managed package.
+
+        Uses an O(1) exact lookup first, then falls back to
+        ``rapidfuzz.process.extractOne`` which short-circuits on the first
+        candidate above *min_score*.
+        """
         name_map = self._get_name_map()
         name_lower = display_name.lower()
         if name_lower in name_map:
             return True
-        for wg_name in name_map:
-            if fuzzy_score(display_name, wg_name) >= self._min_score:
-                return True
-        return False
+        if not name_map:
+            return False
+        result = process.extractOne(
+            display_name,
+            name_map.keys(),
+            scorer=fuzz.WRatio,
+            score_cutoff=self._min_score,
+        )
+        return result is not None
 
     # ------------------------------------------------------------------
     # Internal helpers

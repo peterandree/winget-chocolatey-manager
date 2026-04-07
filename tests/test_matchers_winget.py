@@ -93,3 +93,30 @@ class TestWinGetIsAvailableCaching:
         mgr.is_available()
         mgr.is_available()
         assert call_count == 1
+
+
+class TestWinGetExtractOne:
+    """Issue #32: is_managed() should use rapidfuzz.process.extractOne."""
+
+    def test_fuzzy_match_uses_extract_one(self):
+        """extractOne short-circuits — semantically identical to the loop."""
+        packages = [
+            {"Name": "GitHub Desktop", "Id": "GitHub.GitHubDesktop"},
+            {"Name": "Visual Studio Code", "Id": "Microsoft.VisualStudioCode"},
+            {"Name": "Node.js", "Id": "OpenJS.NodeJS"},
+        ]
+        runner = _make_runner(json.dumps(packages))
+        mgr = WinGetManager(runner=runner)
+        assert mgr.is_managed("GitHub Desktop") is True
+        assert mgr.is_managed("Visual Studio Code") is True
+        assert mgr.is_managed("CompletelyUnknownApp") is False
+
+    def test_extract_one_respects_min_score(self):
+        """Score cutoff is passed through to extractOne."""
+        packages = [{"Name": "Git", "Id": "Git.Git"}]
+        runner = _make_runner(json.dumps(packages))
+        mgr = WinGetManager(runner=runner, min_score=99)
+        # "Git" exact match still works (O(1) dict lookup)
+        assert mgr.is_managed("git") is True
+        # Fuzzy path: score("GitX", "git") < 99
+        assert mgr.is_managed("GitXYZ") is False
