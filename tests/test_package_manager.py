@@ -55,3 +55,50 @@ class TestDisplayResults:
                 display_part = line[:40].rstrip()
                 assert len(display_part) <= 39, f"Truncated name overflows column: '{display_part}'"
                 break
+
+
+# ---------------------------------------------------------------------------
+# Issue #15 — Registry scan deduplication
+# ---------------------------------------------------------------------------
+
+class TestGetInstalledProgramsDedup:
+    def _run_with_json(self, programs_json: str):
+        pm = PackageManager()
+        with patch.object(PackageManager, 'run_command', return_value=(programs_json, '', 0)):
+            pm.get_installed_programs()
+        return pm.installed_programs
+
+    def test_no_duplicates_when_unique(self):
+        data = json.dumps([
+            {'DisplayName': 'App A', 'DisplayVersion': '1.0', 'Publisher': 'X'},
+            {'DisplayName': 'App B', 'DisplayVersion': '2.0', 'Publisher': 'Y'},
+        ])
+        result = self._run_with_json(data)
+        assert len(result) == 2
+
+    def test_duplicates_removed(self):
+        data = json.dumps([
+            {'DisplayName': 'Git', 'DisplayVersion': '2.44', 'Publisher': 'GitForWindows'},
+            {'DisplayName': 'Git', 'DisplayVersion': '2.44', 'Publisher': 'GitForWindows'},
+        ])
+        result = self._run_with_json(data)
+        assert len(result) == 1
+
+    def test_first_occurrence_preferred(self):
+        """HKLM 64-bit (first in list) should be kept over WOW6432Node duplicate."""
+        data = json.dumps([
+            {'DisplayName': 'MyApp', 'DisplayVersion': '64bit-version', 'Publisher': 'Pub'},
+            {'DisplayName': 'MyApp', 'DisplayVersion': '32bit-version', 'Publisher': 'Pub'},
+        ])
+        result = self._run_with_json(data)
+        assert len(result) == 1
+        assert result[0]['DisplayVersion'] == '64bit-version'
+
+    def test_case_insensitive_dedup(self):
+        data = json.dumps([
+            {'DisplayName': 'MyApp', 'DisplayVersion': '1.0', 'Publisher': 'X'},
+            {'DisplayName': 'myapp', 'DisplayVersion': '1.0', 'Publisher': 'X'},
+            {'DisplayName': 'MYAPP', 'DisplayVersion': '1.0', 'Publisher': 'X'},
+        ])
+        result = self._run_with_json(data)
+        assert len(result) == 1

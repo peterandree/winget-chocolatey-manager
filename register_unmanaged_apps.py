@@ -174,7 +174,16 @@ class PackageManager:
             if isinstance(programs, dict):
                 programs = [programs]
 
-            self.installed_programs = programs
+            # Deduplicate by DisplayName (case-insensitive), preferring HKLM 64-bit entries.
+            # The PowerShell script queries hives in order: HKLM 64-bit, HKLM WOW64, HKCU,
+            # so the first occurrence of each name is already the preferred entry.
+            seen: dict = {}
+            for prog in programs:
+                key = (prog.get('DisplayName') or '').strip().lower()
+                if key and key not in seen:
+                    seen[key] = prog
+            self.installed_programs = list(seen.values())
+
             print(f"✅ Found {len(self.installed_programs)} installed programs")
             return True
 
