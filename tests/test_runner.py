@@ -201,3 +201,55 @@ class TestOrchestratorParallelQueries:
 
         # At least some tasks ran in pool threads (not all in the main thread)
         assert len(threads_seen) >= 1
+
+
+class TestOrchestratorSummary:
+    """Issue #37: scan summary displayed on all exit paths."""
+
+    def test_summary_shown_on_all_managed_path(self, caplog):
+        """When all apps are managed, summary still appears."""
+        cfg = ScanConfig()
+        winget = _mock_manager("winget", managed=True)
+        scoop = _mock_manager("scoop")
+        choco = _mock_choco(managed=True)
+
+        with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
+             patch("wincoman.runner.scan_installed_programs",
+                   return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44"}]):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            with caplog.at_level(logging.INFO):
+                code = orch.run()
+        assert code == 0
+        assert "SCAN SUMMARY" in caplog.text
+
+    def test_summary_shown_on_no_matches_path(self, caplog):
+        """When choco search finds nothing, summary still appears."""
+        cfg = ScanConfig()
+        choco = _mock_choco(search_results=[])
+        winget = _mock_manager("winget")
+        scoop = _mock_manager("scoop")
+
+        with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
+             patch("wincoman.runner.scan_installed_programs",
+                   return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44"}]):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            with caplog.at_level(logging.INFO):
+                code = orch.run()
+        assert code == 0
+        assert "SCAN SUMMARY" in caplog.text
+
+    def test_summary_shown_on_dry_run_path(self, caplog):
+        cfg = ScanConfig(dry_run=True)
+        choco = _mock_choco(search_results=[_match()])
+        winget = _mock_manager("winget")
+        scoop = _mock_manager("scoop")
+
+        with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
+             patch("wincoman.runner.scan_installed_programs",
+                   return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44", "Publisher": "X"}]), \
+             patch("wincoman.runner.save_cache"):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            with caplog.at_level(logging.INFO):
+                code = orch.run()
+        assert code == 0
+        assert "SCAN SUMMARY" in caplog.text

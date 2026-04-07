@@ -7,10 +7,57 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional
 
 from wincoman.matchers.base import PackageMatch
+
+
+@dataclass
+class ScanSummary:
+    """Accumulated statistics for a single scan run."""
+
+    total_scanned: int = 0
+    managed_by: dict[str, int] = field(default_factory=dict)
+    local_only: int = 0
+    choco_matches_found: int = 0
+    choco_no_match: int = 0
+
+    def record_classification(
+        self, app_name: str, manager_name: Optional[str]
+    ) -> None:
+        """Record a single app's classification from the detector callback."""
+        self.total_scanned += 1
+        if manager_name:
+            self.managed_by[manager_name] = self.managed_by.get(manager_name, 0) + 1
+        else:
+            self.local_only += 1
+
+    def record_search_result(
+        self, app_name: str, match: Optional[PackageMatch]
+    ) -> None:
+        """Record a single Chocolatey search result."""
+        if match is not None:
+            self.choco_matches_found += 1
+        else:
+            self.choco_no_match += 1
+
+
+def display_summary(summary: ScanSummary) -> None:
+    """Log a formatted scan summary block."""
+    logging.info("\n" + "=" * 70)
+    logging.info("  SCAN SUMMARY")
+    logging.info("=" * 70)
+    logging.info(f"  Total installed programs scanned:   {summary.total_scanned:>5}")
+    for mgr_name, count in sorted(summary.managed_by.items()):
+        logging.info(f"  Managed by {mgr_name + ':':<28} {count:>5}")
+    logging.info(f"  Local only (unmanaged):             {summary.local_only:>5}")
+    if summary.choco_matches_found or summary.choco_no_match:
+        logging.info("  " + "-" * 40)
+        logging.info(f"  Chocolatey matches found:           {summary.choco_matches_found:>5}")
+        logging.info(f"  No Chocolatey match:                {summary.choco_no_match:>5}")
+    logging.info("=" * 70)
 
 
 def display_results(matches: list[PackageMatch] | list[dict]) -> None:

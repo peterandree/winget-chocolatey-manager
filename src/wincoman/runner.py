@@ -21,7 +21,7 @@ from wincoman.matchers.chocolatey import ChocolateyManager
 from wincoman.matchers.scoop import ScoopManager
 from wincoman.matchers.winget import WinGetManager
 from wincoman.registry import scan_installed_programs
-from wincoman.reporter import display_results, export_to_batch
+from wincoman.reporter import ScanSummary, display_results, display_summary, export_to_batch
 
 
 class Orchestrator:
@@ -47,6 +47,7 @@ class Orchestrator:
             Exit code: 0 on success, 1 on failure.
         """
         cfg = self.config
+        summary = ScanSummary()
 
         logging.info("=" * 70)
         logging.info("  wincoman — Windows Computer Manager")
@@ -88,6 +89,7 @@ class Orchestrator:
             managers = [self._winget, self._choco, self._scoop]
 
             def _on_classify(app_name: str, manager_name: str | None) -> None:
+                summary.record_classification(app_name, manager_name)
                 max_w = 40
                 app_display = (
                     (app_name[: max_w - 3] + "...") if len(app_name) > max_w else app_name
@@ -104,6 +106,7 @@ class Orchestrator:
 
             if not unmanaged_apps:
                 logging.info("All apps are already managed.")
+                display_summary(summary)
                 return 0
 
             # Step 5: Search Chocolatey repository
@@ -112,21 +115,22 @@ class Orchestrator:
             def _on_search_result(
                 app_name: str, match: object | None
             ) -> None:
+                from wincoman.matchers.base import PackageMatch as _PM
+
+                summary.record_search_result(
+                    app_name, match if isinstance(match, _PM) else None
+                )
                 max_w = 40
                 app_display = (
                     (app_name[: max_w - 3] + "...")
                     if len(app_name) > max_w
                     else app_name
                 )
-                if match is not None:
-                    from wincoman.matchers.base import PackageMatch
-
-                    pkg_info = ""
-                    mismatch_flag = ""
-                    if isinstance(match, PackageMatch):
-                        pkg_info = f"{match.pkg_id} {match.pkg_version}"
-                        if match.version_mismatch:
-                            mismatch_flag = " ⚠️ version mismatch"
+                if match is not None and isinstance(match, _PM):
+                    pkg_info = f"{match.pkg_id} {match.pkg_version}"
+                    mismatch_flag = (
+                        " ⚠️ version mismatch" if match.version_mismatch else ""
+                    )
                     logging.info(
                         f"  {app_display:<42} found {pkg_info}{mismatch_flag}"
                     )
@@ -139,6 +143,7 @@ class Orchestrator:
 
             if not matches:
                 logging.warning("No matching Chocolatey packages found.")
+                display_summary(summary)
                 return 0
 
             # Persist cache
@@ -149,6 +154,7 @@ class Orchestrator:
             return 0
 
         # Display
+        display_summary(summary)
         display_results(matches)
 
         if cfg.dry_run:

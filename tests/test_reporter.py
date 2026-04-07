@@ -1,11 +1,11 @@
-"""Tests for src/wincoman/reporter.py (Issue #28)."""
+"""Tests for src/wincoman/reporter.py (Issues #28, #37)."""
 import logging
 import os
 
 import pytest
 
 from wincoman.matchers.base import PackageMatch
-from wincoman.reporter import display_results, export_to_batch
+from wincoman.reporter import ScanSummary, display_results, display_summary, export_to_batch
 
 
 def _match(app_name="Git", pkg_id="git", mismatch=False):
@@ -88,3 +88,88 @@ class TestExportToBatch:
         # Pass input_fn=lambda _: "y" so the overwrite prompt doesn't block
         result = export_to_batch([_match()], str(subdir), input_fn=lambda _: "y")
         assert result is False
+
+
+class TestScanSummary:
+    """Issue #37: ScanSummary accumulates stats from callbacks."""
+
+    def test_record_classification_managed(self):
+        s = ScanSummary()
+        s.record_classification("Git", "winget")
+        s.record_classification("VLC", "chocolatey")
+        assert s.total_scanned == 2
+        assert s.managed_by == {"winget": 1, "chocolatey": 1}
+        assert s.local_only == 0
+
+    def test_record_classification_unmanaged(self):
+        s = ScanSummary()
+        s.record_classification("FooApp", None)
+        assert s.total_scanned == 1
+        assert s.local_only == 1
+        assert s.managed_by == {}
+
+    def test_record_search_result_found(self):
+        s = ScanSummary()
+        s.record_search_result("Git", _match())
+        assert s.choco_matches_found == 1
+        assert s.choco_no_match == 0
+
+    def test_record_search_result_not_found(self):
+        s = ScanSummary()
+        s.record_search_result("FooApp", None)
+        assert s.choco_matches_found == 0
+        assert s.choco_no_match == 1
+
+    def test_combined_stats(self):
+        s = ScanSummary()
+        s.record_classification("Git", "winget")
+        s.record_classification("VLC", "winget")
+        s.record_classification("FooApp", None)
+        s.record_classification("BarApp", None)
+        s.record_search_result("FooApp", _match("FooApp", "fooapp"))
+        s.record_search_result("BarApp", None)
+        assert s.total_scanned == 4
+        assert s.managed_by == {"winget": 2}
+        assert s.local_only == 2
+        assert s.choco_matches_found == 1
+        assert s.choco_no_match == 1
+
+
+class TestDisplaySummary:
+    """Issue #37: display_summary logs a formatted block."""
+
+    def test_shows_total_and_managers(self, caplog):
+        s = ScanSummary()
+        s.record_classification("Git", "winget")
+        s.record_classification("VLC", "chocolatey")
+        s.record_classification("Foo", None)
+        with caplog.at_level(logging.INFO):
+            display_summary(s)
+        assert "SCAN SUMMARY" in caplog.text
+        assert "3" in caplog.text  # total
+        assert "winget" in caplog.text
+        assert "chocolatey" in caplog.text
+        assert "Local only" in caplog.text
+
+    def test_shows_choco_search_stats(self, caplog):
+        s = ScanSummary()
+        s.record_search_result("Git", _match())
+        s.record_search_result("Foo", None)
+        with caplog.at_level(logging.INFO):
+            display_summary(s)
+        assert "Chocolatey matches found" in caplog.text
+        assert "No Chocolatey match" in caplog.text
+
+    def test_omits_choco_section_when_no_search_done(self, caplog):
+        s = ScanSummary()
+        s.record_classification("Git", "winget")
+        with caplog.at_level(logging.INFO):
+            display_summary(s)
+        assert "Chocolatey matches" not in caplog.text
+
+    def test_empty_summary_still_renders(self, caplog):
+        s = ScanSummary()
+        with caplog.at_level(logging.INFO):
+            display_summary(s)
+        assert "SCAN SUMMARY" in caplog.text
+        assert "0" in caplog.text
