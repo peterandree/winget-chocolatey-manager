@@ -1,13 +1,14 @@
-"""Tests for src/wincoman/matchers/chocolatey.py (Issue #24)."""
-from unittest.mock import patch
+"""Tests for src/wincoman/matchers/chocolatey.py (Issue #24, #31)."""
 
 from wincoman.config import ScanConfig
 from wincoman.matchers.chocolatey import ChocolateyManager
 from wincoman.matchers.base import PackageMatch
 
 
-def _make_runner(stdout="", returncode=0):
+def _make_runner(stdout="", returncode=0, choco_version="2.3.0"):
     def runner(cmd, **kwargs):
+        if cmd == ["choco", "--version"] and returncode == 0:
+            return choco_version, "", 0
         return stdout, "", returncode
 
     return runner
@@ -34,11 +35,12 @@ class TestChocolateyManagerListManaged:
 
         def runner(cmd, **kwargs):
             calls.append(cmd)
+            if cmd == ["choco", "--version"]:
+                return f"{choco_major}.0.0", "", 0
             return stdout, "", 0
 
-        with patch("wincoman.matchers.chocolatey.get_choco_major_version", return_value=choco_major):
-            mgr = ChocolateyManager(runner=runner)
-            result = mgr.list_managed()
+        mgr = ChocolateyManager(runner=runner)
+        result = mgr.list_managed()
         return result, calls
 
     def test_parses_packages_v1(self):
@@ -57,11 +59,12 @@ class TestChocolateyManagerListManaged:
 class TestChocolateyManagerSearch:
     def _manager_with_search_results(self, search_stdout, choco_major=2, min_score=60):
         def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return f"{choco_major}.0.0", "", 0
             return search_stdout, "", 0
 
         config = ScanConfig(min_score=min_score)
-        with patch("wincoman.matchers.chocolatey.get_choco_major_version", return_value=choco_major):
-            mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
+        mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
         return mgr
 
     def test_exact_match_returns_package_match(self):
@@ -86,16 +89,17 @@ class TestChocolateyManagerSearch:
     def test_fuzzy_match_below_threshold_rejected(self):
         # Exact search returns nothing; fuzzy search returns results but score < threshold
         def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
             if "--exact" in cmd:
                 return "", "", 0  # exact: no match
             return CHOCO_SEARCH_FUZZY, "", 0  # fuzzy: low-score candidates
 
-        with patch("wincoman.matchers.chocolatey.get_choco_major_version", return_value=2):
-            mgr = ChocolateyManager(
-                config=ScanConfig(min_score=99),
-                runner=runner,
-                sleep=lambda _: None,
-            )
+        mgr = ChocolateyManager(
+            config=ScanConfig(min_score=99),
+            runner=runner,
+            sleep=lambda _: None,
+        )
         result = mgr.search("XYZTotallyDifferent")
         assert result is None
 
@@ -103,11 +107,12 @@ class TestChocolateyManagerSearch:
 class TestChocolateyManagerSearchMany:
     def test_returns_list_of_matches(self):
         def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
             return CHOCO_SEARCH_EXACT, "", 0
 
         config = ScanConfig(min_score=60)
-        with patch("wincoman.matchers.chocolatey.get_choco_major_version", return_value=2):
-            mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
+        mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
 
         apps = [{"name": "git", "version": "2.44.0"}]
         results = mgr.search_many(apps)
@@ -118,12 +123,13 @@ class TestChocolateyManagerSearchMany:
         sleep_calls = []
 
         def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
             return CHOCO_SEARCH_EXACT, "", 0
 
-        with patch("wincoman.matchers.chocolatey.get_choco_major_version", return_value=2):
-            mgr = ChocolateyManager(
-                runner=runner, sleep=lambda d: sleep_calls.append(d)
-            )
+        mgr = ChocolateyManager(
+            runner=runner, sleep=lambda d: sleep_calls.append(d)
+        )
 
         apps = [{"name": "git", "version": ""}, {"name": "nodejs", "version": ""}]
         mgr.search_many(apps)
@@ -134,11 +140,51 @@ class TestChocolateyManagerSearchMany:
         progress = []
 
         def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
             return CHOCO_SEARCH_EXACT, "", 0
 
-        with patch("wincoman.matchers.chocolatey.get_choco_major_version", return_value=2):
-            mgr = ChocolateyManager(runner=runner, sleep=lambda _: None)
+        mgr = ChocolateyManager(runner=runner, sleep=lambda _: None)
 
         apps = [{"name": "git", "version": ""}]
         mgr.search_many(apps, progress_cb=lambda i, t: progress.append((i, t)))
         assert (1, 1) in progress
+
+
+class TestChocoMajorVersionCaching:
+    """Issue #31: _choco_major_version() must be called at most once per instance."""
+
+    def test_choco_version_called_once_across_multiple_searches(self):
+        """Even after N search() calls, get_choco_major_version is invoked only once."""
+        call_count = 0
+
+        def counting_runner(cmd, **kwargs):
+            nonlocal call_count
+            if cmd == ["choco", "--version"]:
+                call_count += 1
+                return "2.3.0", "", 0
+            return CHOCO_SEARCH_EXACT, "", 0
+
+        mgr = ChocolateyManager(runner=counting_runner, sleep=lambda _: None)
+        mgr.search("git")
+        mgr.search("nodejs")
+        mgr.search("python")
+        assert call_count == 1, f"Expected 1 choco --version call, got {call_count}"
+
+    def test_choco_version_cached_across_list_and_search(self):
+        """Version is cached across list_managed() and search() calls."""
+        call_count = 0
+
+        def counting_runner(cmd, **kwargs):
+            nonlocal call_count
+            if cmd == ["choco", "--version"]:
+                call_count += 1
+                return "1.4.0", "", 0
+            if "list" in cmd:
+                return CHOCO_LIST_V1, "", 0
+            return CHOCO_SEARCH_EXACT, "", 0
+
+        mgr = ChocolateyManager(runner=counting_runner, sleep=lambda _: None)
+        mgr.list_managed()
+        mgr.search("git")
+        assert call_count == 1

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from typing import Optional
+from typing import Callable, Optional
 
 # Hard timeout (seconds) for external commands.  Adapters may pass a shorter
 # timeout for quick operations (e.g. get_choco_major_version uses 15 s).
@@ -50,8 +50,24 @@ def run_command(
         return "", str(exc), 1
 
 
-def get_choco_major_version() -> int:
-    """Return the Chocolatey major version number, or 0 if undetermined."""
+def get_choco_major_version(
+    runner: Optional[Callable[..., tuple[str, str, int]]] = None,
+) -> int:
+    """Return the Chocolatey major version number, or 0 if undetermined.
+
+    Args:
+        runner: Optional callable with the same signature as :func:`run_command`.
+            When *None*, falls back to a direct ``subprocess.run`` call.
+    """
+    if runner is not None:
+        stdout, _, code = runner(["choco", "--version"], timeout=15)
+        if code != 0:
+            return 0
+        try:
+            return int(stdout.strip().split(".")[0])
+        except (ValueError, IndexError):
+            return 0
+
     try:
         result = subprocess.run(
             ["choco", "--version"],

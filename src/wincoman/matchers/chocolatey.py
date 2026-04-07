@@ -29,6 +29,7 @@ class ChocolateyManager(SearchablePackageManager):
         self._runner = runner or run_command
         self._sleep = sleep or time.sleep
         self._cache: Optional[set[str]] = None
+        self._choco_ver: Optional[int] = None
 
     @property
     def name(self) -> str:
@@ -167,4 +168,6 @@ class ChocolateyManager(SearchablePackageManager):
         return [] if self._choco_major_version() >= 2 else ["--limit-output"]
 
     def _choco_major_version(self) -> int:
-        return get_choco_major_version()
+        if self._choco_ver is None:
+            self._choco_ver = get_choco_major_version(runner=self._runner)
+        return self._choco_ver
