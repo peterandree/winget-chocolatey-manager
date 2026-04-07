@@ -109,11 +109,33 @@ class Orchestrator:
             # Step 5: Search Chocolatey repository
             logging.info("\nStep 5/5: Searching Chocolatey Repository")
 
-            def _progress(i: int, total: int) -> None:
-                if i % 5 == 0 or i == total:
-                    logging.info(f"Progress: {i}/{total} apps processed...")
+            def _on_search_result(
+                app_name: str, match: object | None
+            ) -> None:
+                max_w = 40
+                app_display = (
+                    (app_name[: max_w - 3] + "...")
+                    if len(app_name) > max_w
+                    else app_name
+                )
+                if match is not None:
+                    from wincoman.matchers.base import PackageMatch
 
-            matches = self._choco.search_many(unmanaged_apps, progress_cb=_progress)
+                    pkg_info = ""
+                    mismatch_flag = ""
+                    if isinstance(match, PackageMatch):
+                        pkg_info = f"{match.pkg_id} {match.pkg_version}"
+                        if match.version_mismatch:
+                            mismatch_flag = " ⚠️ version mismatch"
+                    logging.info(
+                        f"  {app_display:<42} found {pkg_info}{mismatch_flag}"
+                    )
+                else:
+                    logging.info(f"  {app_display:<42} no match")
+
+            matches = self._choco.search_many(
+                unmanaged_apps, on_result=_on_search_result
+            )
 
             if not matches:
                 logging.warning("No matching Chocolatey packages found.")

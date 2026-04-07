@@ -109,6 +109,7 @@ class ChocolateyManager(SearchablePackageManager):
         apps: list[dict],
         *,
         progress_cb: Optional[Callable[[int, int], None]] = None,
+        on_result: Optional[Callable[[str, Optional[PackageMatch]], None]] = None,
     ) -> list[PackageMatch]:
         """Search the repository for all apps in *apps* concurrently.
 
@@ -130,19 +131,21 @@ class ChocolateyManager(SearchablePackageManager):
                     progress_cb(completed, total)
                 app = future_to_app[future]
                 match = future.result()
+                enriched: Optional[PackageMatch] = None
                 if match is not None:
                     app_ver = app.get("version", "")
                     mismatch = versions_differ(app_ver, match.pkg_version)
-                    results.append(
-                        PackageMatch(
-                            app_name=app["name"],
-                            app_version=app_ver,
-                            pkg_id=match.pkg_id,
-                            pkg_version=match.pkg_version,
-                            version_mismatch=mismatch,
-                            manager=self.name,
-                        )
+                    enriched = PackageMatch(
+                        app_name=app["name"],
+                        app_version=app_ver,
+                        pkg_id=match.pkg_id,
+                        pkg_version=match.pkg_version,
+                        version_mismatch=mismatch,
+                        manager=self.name,
                     )
+                    results.append(enriched)
+                if on_result is not None:
+                    on_result(app["name"], enriched)
         return results
 
     # ------------------------------------------------------------------

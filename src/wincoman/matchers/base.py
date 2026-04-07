@@ -84,9 +84,12 @@ class SearchablePackageManager(BasePackageManager, ABC):
         apps: list[dict],
         *,
         progress_cb: Optional[Callable[[int, int], None]] = None,
+        on_result: Optional[Callable[[str, Optional["PackageMatch"]], None]] = None,
     ) -> list[PackageMatch]:
-        """Batch search with optional per-item progress callback.
+        """Batch search with optional per-item callbacks.
 
+        *progress_cb* fires after each item with ``(completed, total)``.
+        *on_result* fires after each item with ``(app_name, match_or_None)``.
         Default implementation loops over :meth:`search`;
         adapters may override for bulk API calls.
         """

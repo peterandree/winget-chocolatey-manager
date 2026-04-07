@@ -204,6 +204,57 @@ class TestChocolateyManagerSearchMany:
         assert (1, 1) in progress
 
 
+class TestSearchManyOnResult:
+    """Issue #36: on_result callback receives (app_name, match_or_None)."""
+
+    def test_on_result_fires_for_each_app(self):
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
+            return CHOCO_SEARCH_EXACT, "", 0
+
+        results_received = []
+        config = ScanConfig(min_score=60)
+        mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
+
+        apps = [{"name": "git", "version": ""}, {"name": "nodejs", "version": ""}]
+        mgr.search_many(apps, on_result=lambda n, m: results_received.append((n, m)))
+        assert len(results_received) == 2
+
+    def test_on_result_returns_match_when_found(self):
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
+            return CHOCO_SEARCH_EXACT, "", 0
+
+        results_received = []
+        config = ScanConfig(min_score=60)
+        mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
+
+        apps = [{"name": "git", "version": "2.44.0"}]
+        mgr.search_many(apps, on_result=lambda n, m: results_received.append((n, m)))
+        name, match = results_received[0]
+        assert name == "git"
+        assert match is not None
+        assert match.pkg_id == "git"
+
+    def test_on_result_returns_none_when_no_match(self):
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
+            return "", "", 0  # empty output — no match
+
+        results_received = []
+        config = ScanConfig(min_score=60)
+        mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
+
+        apps = [{"name": "UnknownApp12345", "version": ""}]
+        mgr.search_many(apps, on_result=lambda n, m: results_received.append((n, m)))
+        name, match = results_received[0]
+        assert name == "UnknownApp12345"
+        assert match is None
+
+
 class TestChocoMajorVersionCaching:
     """Issue #31: _choco_major_version() must be called at most once per instance."""
 
