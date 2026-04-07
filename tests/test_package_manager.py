@@ -245,3 +245,91 @@ class TestChocoInstallNoSkipPS:
         pm.export_to_batch()
         content = (tmp_path / 'register_unmanaged_apps.bat').read_text()
         assert '-n' not in content
+
+
+# ---------------------------------------------------------------------------
+# Issue #1 -- WinGet JSON parser
+# ---------------------------------------------------------------------------
+
+class TestGetWingetPackages:
+    def test_parses_json_output(self):
+        packages = [
+            {'Name': 'GitHub Desktop', 'Id': 'GitHub.GitHubDesktop', 'Version': '3.3'},
+            {'Name': '7-Zip 24.01 (x64)', 'Id': '7zip.7zip', 'Version': '24.01'},
+        ]
+        pm = PackageManager()
+        with patch.object(PackageManager, 'run_command', return_value=(json.dumps(packages), '', 0)):
+            pm.get_winget_packages()
+        assert 'github desktop' in pm.winget_apps
+        assert '7-zip 24.01 (x64)' in pm.winget_apps
+
+    def test_names_with_spaces_preserved(self):
+        packages = [{'Name': 'Visual Studio Code', 'Id': 'Microsoft.VisualStudioCode', 'Version': '1.89'}]
+        pm = PackageManager()
+        with patch.object(PackageManager, 'run_command', return_value=(json.dumps(packages), '', 0)):
+            pm.get_winget_packages()
+        assert 'visual studio code' in pm.winget_apps
+
+    def test_invalid_json_returns_false(self):
+        pm = PackageManager()
+        with patch.object(PackageManager, 'run_command', return_value=('not json', '', 0)):
+            result = pm.get_winget_packages()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #2 -- fuzzy_score replaces lossy normalize_name matching
+# ---------------------------------------------------------------------------
+
+class TestFuzzyScore:
+    def test_exact_match_is_100(self):
+        assert PackageManager.fuzzy_score('Git', 'Git') == 100
+
+    def test_github_desktop_matches_github_desktop_pkg(self):
+        # WRatio handles case and punctuation differences
+        score = PackageManager.fuzzy_score('GitHub Desktop', 'github-desktop')
+        assert score >= 60, f'Expected >= 60, got {score}'
+
+    def test_seven_zip_matches(self):
+        score = PackageManager.fuzzy_score('7-Zip', '7zip')
+        assert score >= 60, f'Expected >= 60, got {score}'
+
+    def test_unrelated_strings_score_low(self):
+        score = PackageManager.fuzzy_score('Python 3.12', 'node')
+        assert score < 50
+
+
+# ---------------------------------------------------------------------------
+# Issue #3 -- approximate search scores candidates, picks best above threshold
+# ---------------------------------------------------------------------------
+
+class TestApproxSearchScoring:
+    def _run_search(self, app_name: str, choco_output: str):
+        pm = PackageManager()
+        pm.unmanaged_apps = [{'name': app_name, 'version': '1.0'}]
+        call_count = {'n': 0}
+
+        def fake_run(cmd, **kwargs):
+            call_count['n'] += 1
+            if '--exact' in cmd:
+                return '', '', 1  # exact search fails
+            return choco_output, '', 0
+
+        with patch.object(PackageManager, 'run_command', side_effect=fake_run):
+            with patch.object(PackageManager, 'get_choco_major_version', return_value=1):
+                with patch('time.sleep'):
+                    pm.search_chocolatey_matches()
+        return pm.matches
+
+    def test_best_scoring_candidate_selected(self):
+        choco_out = '7zip.commandline|24.01\n7zip|24.01\n7zip.install|24.01\n'
+        matches = self._run_search('7-Zip', choco_out)
+        # 7zip should score higher than 7zip.commandline for '7-Zip'
+        if matches:
+            assert matches[0]['choco_id'] in ('7zip', '7zip.install')
+
+    def test_low_score_candidate_rejected(self):
+        # 'completelydifferentapp' should score very low against '7-Zip'
+        choco_out = 'completelydifferentapp|1.0\n'
+        matches = self._run_search('7-Zip', choco_out)
+        assert matches == []

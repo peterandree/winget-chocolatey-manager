@@ -13,6 +13,12 @@ import sys
 import time
 from typing import List, Dict, Set, Tuple, Optional
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _RAPIDFUZZ_AVAILABLE = False
+
 class PackageManager:
     """Main package manager class with error handling"""
 
@@ -32,6 +38,9 @@ class PackageManager:
     COMMAND_TIMEOUT = 60
     # Delay (seconds) between successive choco search calls to avoid rate-limiting.
     SEARCH_DELAY = 0.1
+    # Minimum fuzzy-match score (0-100) required to consider a Chocolatey package
+    # a match for an installed app name.
+    FUZZY_MATCH_THRESHOLD = 60
 
     @staticmethod
     def run_command(cmd: List[str], capture_output=True, shell=False, timeout: Optional[int] = None) -> Tuple[str, str, int]:
@@ -75,13 +84,27 @@ class PackageManager:
 
     @staticmethod
     def normalize_name(name: str) -> str:
-        """Normalize app name for comparison"""
+        """Normalize app name for display/fallback comparison (strips versions & punctuation)."""
         if not name:
             return ""
-        # Remove version numbers, special characters, convert to lowercase
         normalized = re.sub(r'\d+\.\d+.*', '', name)
         normalized = re.sub(r'[^a-z0-9]', '', normalized.lower())
         return normalized
+
+    @staticmethod
+    def fuzzy_score(a: str, b: str) -> int:
+        """Return a 0-100 similarity score between two strings using rapidfuzz.
+
+        Uses WRatio which handles partial matches, token reordering, and case
+        differences. Falls back to a binary 100/0 score (normalised exact match)
+        when rapidfuzz is not installed.
+        """
+        if _RAPIDFUZZ_AVAILABLE:
+            return int(_fuzz.WRatio(a, b))
+        # Fallback: exact match on normalized names
+        na = re.sub(r'[^a-z0-9]', '', a.lower())
+        nb = re.sub(r'[^a-z0-9]', '', b.lower())
+        return 100 if na == nb else 0
 
     def check_prerequisites(self) -> bool:
         """Check if required tools are available"""
@@ -132,34 +155,28 @@ class PackageManager:
         print("  Step 1/5: Checking WinGet Managed Packages")
         print("="*70)
 
-        stdout, stderr, code = self.run_command(['winget', 'list', '--accept-source-agreements'])
+        # --output json is available since WinGet 1.2 and gives reliable structured
+        # output that isn't affected by fixed-width column formatting.
+        stdout, stderr, code = self.run_command(
+            ['winget', 'list', '--output', 'json', '--accept-source-agreements']
+        )
 
         if code != 0:
             print(f"❌ Failed to get WinGet packages!")
             print(f"   Error: {stderr}")
             return False
 
-        lines = stdout.split('\n')
-        data_started = False
+        try:
+            packages = json.loads(stdout)
+        except (json.JSONDecodeError, ValueError):
+            print("❌ Failed to parse WinGet JSON output!")
+            return False
 
-        for line in lines:
-            if '---' in line:
-                data_started = True
-                continue
-
-            if not data_started or not line.strip():
-                continue
-
-            # Parse WinGet output
-            parts = line.split()
-            if len(parts) >= 2:
-                name = ' '.join(parts[:-3]) if len(parts) >= 3 else parts[0]
-                normalized = self.normalize_name(name)
-                if normalized:
-                    self.winget_apps[normalized] = {
-                        'name': name.strip(),
-                        'line': line.strip()
-                    }
+        for pkg in packages:
+            name = pkg.get('Name', '') or ''
+            name = name.strip()
+            if name:
+                self.winget_apps[name.lower()] = {'name': name, 'id': pkg.get('Id', '')}
 
         if not self.winget_apps:
             print("⚠️  Warning: No WinGet packages detected")
@@ -270,6 +287,18 @@ class PackageManager:
         print(f"✅ Found {len(self.choco_packages)} packages in Chocolatey")
         return True
 
+    def _is_managed_by_winget(self, display_name: str) -> bool:
+        """Return True if the app name fuzzy-matches a WinGet-managed package."""
+        name_lower = display_name.lower()
+        # Fast exact check first
+        if name_lower in self.winget_apps:
+            return True
+        # Fuzzy fallback for minor spelling/punctuation differences
+        for wg_name in self.winget_apps:
+            if self.fuzzy_score(display_name, wg_name) >= self.FUZZY_MATCH_THRESHOLD:
+                return True
+        return False
+
     def find_unmanaged_apps(self) -> bool:
         """Find apps not managed by WinGet or Chocolatey"""
         print("\n" + "="*70)
@@ -283,8 +312,12 @@ class PackageManager:
 
             normalized = self.normalize_name(display_name)
 
-            # Skip if managed by WinGet or Chocolatey
-            if normalized in self.winget_apps or normalized in self.choco_packages:
+            # Skip if managed by Chocolatey (normalized key lookup)
+            if normalized in self.choco_packages:
+                continue
+
+            # Skip if managed by WinGet (fuzzy match against JSON-parsed names)
+            if self._is_managed_by_winget(display_name):
                 continue
 
             self.unmanaged_apps.append({
@@ -335,19 +368,29 @@ class PackageManager:
                         package_id = parts[0]
                         package_version = parts[1]
 
-            # Try approximate search if exact failed
+            # Try approximate search if exact failed — score every candidate
+            # against the installed app name and only accept results above threshold.
             if not package_id:
                 stdout, stderr, code = self.run_command(
                     ['choco', 'search', app['name']] + limit_output_flag
                 )
 
                 if code == 0 and stdout.strip():
-                    lines = stdout.strip().split('\n')
-                    if lines:
-                        parts = lines[0].split('|')
+                    best_id = None
+                    best_version = None
+                    best_score = 0
+                    for line in stdout.strip().split('\n'):
+                        parts = line.split('|')
                         if len(parts) >= 2:
-                            package_id = parts[0]
-                            package_version = parts[1]
+                            candidate_id = parts[0].strip()
+                            score = self.fuzzy_score(app['name'], candidate_id)
+                            if score > best_score:
+                                best_score = score
+                                best_id = candidate_id
+                                best_version = parts[1].strip()
+                    if best_score >= self.FUZZY_MATCH_THRESHOLD:
+                        package_id = best_id
+                        package_version = best_version
 
             if package_id:
                 self.matches.append({
