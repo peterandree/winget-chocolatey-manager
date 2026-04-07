@@ -55,6 +55,21 @@ class PackageManager:
             return "", str(e), 1
 
     @staticmethod
+    def get_choco_major_version() -> int:
+        """Return the Chocolatey major version number, or 0 if undetermined."""
+        try:
+            result = subprocess.run(
+                ['choco', '--version'],
+                capture_output=True, text=True, encoding='utf-8',
+                errors='ignore', timeout=15,
+            )
+            version_str = result.stdout.strip()
+            major = int(version_str.split('.')[0])
+            return major
+        except Exception:
+            return 0
+
+    @staticmethod
     def normalize_name(name: str) -> str:
         """Normalize app name for comparison"""
         if not name:
@@ -211,7 +226,14 @@ class PackageManager:
         print("  Step 3/5: Checking Chocolatey Packages")
         print("="*70)
 
-        stdout, stderr, code = self.run_command(['choco', 'list', '--limit-output'])
+        # --limit-output is deprecated in Chocolatey v2.x; use bare 'choco list' there.
+        choco_major = self.get_choco_major_version()
+        if choco_major >= 2:
+            cmd = ['choco', 'list']
+        else:
+            cmd = ['choco', 'list', '--limit-output']
+
+        stdout, stderr, code = self.run_command(cmd)
 
         if code != 0:
             print(f"❌ Failed to get Chocolatey packages!")
@@ -272,6 +294,10 @@ class PackageManager:
         print("="*70)
         print("\nThis may take a few minutes...")
 
+        # --limit-output is deprecated in Chocolatey v2.x.
+        choco_major = self.get_choco_major_version()
+        limit_output_flag = [] if choco_major >= 2 else ['--limit-output']
+
         total = len(self.unmanaged_apps)
         for i, app in enumerate(self.unmanaged_apps, 1):
             if i % 5 == 0 or i == total:
@@ -279,7 +305,7 @@ class PackageManager:
 
             # Try exact search first
             stdout, stderr, code = self.run_command(
-                ['choco', 'search', app['name'], '--exact', '--limit-output']
+                ['choco', 'search', app['name'], '--exact'] + limit_output_flag
             )
 
             package_id = None
@@ -296,7 +322,7 @@ class PackageManager:
             # Try approximate search if exact failed
             if not package_id:
                 stdout, stderr, code = self.run_command(
-                    ['choco', 'search', app['name'], '--limit-output']
+                    ['choco', 'search', app['name']] + limit_output_flag
                 )
 
                 if code == 0 and stdout.strip():

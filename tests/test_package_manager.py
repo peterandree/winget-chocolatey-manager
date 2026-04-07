@@ -130,3 +130,38 @@ class TestRunCommandTimeout:
             PackageManager.run_command(['choco', '--version'], timeout=5)
         _, kwargs = mock_run.call_args
         assert kwargs['timeout'] == 5
+
+
+# ---------------------------------------------------------------------------
+# Issue #12 — choco list --limit-output deprecated in v2
+# ---------------------------------------------------------------------------
+
+class TestChocoVersionCompat:
+    def _get_packages_with_version(self, version_str: str):
+        pm = PackageManager()
+        captured_cmds = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmds.append(list(cmd))
+            return 'git|2.44.0\n', '', 0
+
+        with patch.object(PackageManager, 'get_choco_major_version', return_value=int(version_str.split('.')[0])):
+            with patch.object(PackageManager, 'run_command', side_effect=fake_run):
+                pm.get_chocolatey_packages()
+        return captured_cmds
+
+    def test_v1_uses_limit_output(self):
+        cmds = self._get_packages_with_version('1.4.0')
+        assert any('--limit-output' in c for c in cmds)
+
+    def test_v2_omits_limit_output(self):
+        cmds = self._get_packages_with_version('2.3.0')
+        assert not any('--limit-output' in c for c in cmds)
+
+    def test_get_choco_major_version_parses_version(self):
+        with patch('subprocess.run', return_value=MagicMock(stdout='2.3.0\n', returncode=0)):
+            assert PackageManager.get_choco_major_version() == 2
+
+    def test_get_choco_major_version_returns_zero_on_error(self):
+        with patch('subprocess.run', side_effect=FileNotFoundError()):
+            assert PackageManager.get_choco_major_version() == 0
