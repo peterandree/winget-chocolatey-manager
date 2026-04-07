@@ -28,6 +28,7 @@ class WinGetManager(BasePackageManager):
         self._min_score = min_score
         self._runner = runner or run_command
         self._cache: Optional[dict[str, str]] = None  # name_lower -> id
+        self._available: Optional[bool] = None
 
     @property
     def name(self) -> str:
@@ -35,8 +36,10 @@ class WinGetManager(BasePackageManager):
 
     def is_available(self) -> bool:
         """Return True when winget is on PATH and responds."""
-        _, _, code = self._runner(["winget", "--version"])
-        return code == 0
+        if self._available is None:
+            _, _, code = self._runner(["winget", "--version"])
+            self._available = code == 0
+        return self._available
 
     def list_managed(self) -> set[str]:
         """Return normalised names of all WinGet-managed packages."""

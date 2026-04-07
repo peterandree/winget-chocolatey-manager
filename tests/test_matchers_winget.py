@@ -74,3 +74,22 @@ class TestWinGetManagerIsManaged:
         mgr = self._manager_with([{"Name": "GitHub Desktop", "Id": "GitHub.GitHubDesktop"}])
         # "github desktop" vs "GitHub Desktop" should score above default 60
         assert mgr.is_managed("GitHub Desktop") is True
+
+
+class TestWinGetIsAvailableCaching:
+    """Issue #34: is_available() should spawn subprocess at most once."""
+
+    def test_is_available_cached_after_first_call(self):
+        call_count = 0
+
+        def counting_runner(cmd, **kwargs):
+            nonlocal call_count
+            if "--version" in cmd:
+                call_count += 1
+            return "v1.6", "", 0
+
+        mgr = WinGetManager(runner=counting_runner)
+        mgr.is_available()
+        mgr.is_available()
+        mgr.is_available()
+        assert call_count == 1

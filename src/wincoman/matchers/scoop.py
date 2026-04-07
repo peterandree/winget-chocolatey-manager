@@ -20,6 +20,8 @@ class ScoopManager(BasePackageManager):
     def __init__(self, runner: Optional[Callable] = None) -> None:
         self._runner = runner or run_command
         self._cache: Optional[set[str]] = None
+        self._available: Optional[bool] = None
+        self._normalised_cache: Optional[set[str]] = None
 
     @property
     def name(self) -> str:
@@ -27,8 +29,10 @@ class ScoopManager(BasePackageManager):
 
     def is_available(self) -> bool:
         """Return True when scoop is on PATH and responds."""
-        _, _, code = self._runner(["scoop", "--version"], timeout=10)
-        return code == 0
+        if self._available is None:
+            _, _, code = self._runner(["scoop", "--version"], timeout=10)
+            self._available = code == 0
+        return self._available
 
     def list_managed(self) -> set[str]:
         """Return normalised names of all Scoop-installed packages."""
@@ -41,11 +45,17 @@ class ScoopManager(BasePackageManager):
         if name_lower in raw:
             return True
         norm = normalize_name(display_name)
-        return norm in {normalize_name(n) for n in raw}
+        return norm in self._get_normalised_set()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _get_normalised_set(self) -> set[str]:
+        """Return cached set of normalised package names."""
+        if self._normalised_cache is None:
+            self._normalised_cache = {normalize_name(n) for n in self._raw_names()}
+        return self._normalised_cache
 
     def _raw_names(self) -> set[str]:
         """Return cached set of raw (un-normalised) package names."""

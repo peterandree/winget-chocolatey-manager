@@ -30,6 +30,7 @@ class ChocolateyManager(SearchablePackageManager):
         self._sleep = sleep or time.sleep
         self._cache: Optional[set[str]] = None
         self._choco_ver: Optional[int] = None
+        self._available: Optional[bool] = None
 
     @property
     def name(self) -> str:
@@ -37,8 +38,10 @@ class ChocolateyManager(SearchablePackageManager):
 
     def is_available(self) -> bool:
         """Return True when choco is on PATH and responds."""
-        _, _, code = self._runner(["choco", "--version"])
-        return code == 0
+        if self._available is None:
+            _, _, code = self._runner(["choco", "--version"])
+            self._available = code == 0
+        return self._available
 
     def list_managed(self) -> set[str]:
         """Return normalised names of all locally-installed Chocolatey packages."""

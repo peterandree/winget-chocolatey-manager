@@ -53,3 +53,48 @@ class TestScoopManagerIsManaged:
     def test_unmanaged_returns_false(self):
         mgr = ScoopManager(runner=_make_runner(SCOOP_LIST_OUTPUT))
         assert mgr.is_managed("unknown-app-xyz") is False
+
+
+class TestScoopIsAvailableCaching:
+    """Issue #34: is_available() should spawn subprocess at most once."""
+
+    def test_is_available_cached_after_first_call(self):
+        call_count = 0
+
+        def counting_runner(cmd, **kwargs):
+            nonlocal call_count
+            if "--version" in cmd:
+                call_count += 1
+            return "0.4.0", "", 0
+
+        mgr = ScoopManager(runner=counting_runner)
+        mgr.is_available()
+        mgr.is_available()
+        mgr.is_available()
+        assert call_count == 1
+
+
+class TestScoopNormalisedSetCaching:
+    """Issue #34: Scoop normalised name set should be built once, not per call."""
+
+    def test_normalised_set_built_once(self):
+        normalize_calls = []
+        original_normalize = __import__("wincoman.scoring", fromlist=["normalize_name"]).normalize_name
+
+        def counting_normalize(name):
+            normalize_calls.append(name)
+            return original_normalize(name)
+
+        from unittest.mock import patch
+
+        mgr = ScoopManager(runner=_make_runner(SCOOP_LIST_OUTPUT))
+        with patch("wincoman.matchers.scoop.normalize_name", side_effect=counting_normalize):
+            mgr.is_managed("git")
+            first_count = len(normalize_calls)
+            mgr.is_managed("nodejs")
+            second_count = len(normalize_calls)
+
+        # Second call should add only 1 normalize call (for the display_name itself)
+        # not rebuild the full set
+        incremental = second_count - first_count
+        assert incremental <= 1, f"Expected ≤1 normalize call, got {incremental}"

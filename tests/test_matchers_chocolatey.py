@@ -28,6 +28,23 @@ class TestChocolateyManagerAvailability:
         mgr = ChocolateyManager(runner=_make_runner("", returncode=1))
         assert mgr.is_available() is False
 
+    def test_is_available_cached_after_first_call(self):
+        """Issue #34: is_available() spawns subprocess at most once."""
+        call_count = 0
+
+        def counting_runner(cmd, **kwargs):
+            nonlocal call_count
+            if cmd == ["choco", "--version"]:
+                call_count += 1
+                return "2.3.0", "", 0
+            return "", "", 0
+
+        mgr = ChocolateyManager(runner=counting_runner)
+        mgr.is_available()
+        mgr.is_available()
+        mgr.is_available()
+        assert call_count == 1
+
 
 class TestChocolateyManagerListManaged:
     def _manager(self, stdout, choco_major=1):
