@@ -121,25 +121,33 @@ class Orchestrator:
             }
 
             def _on_search_result(app_name: str, match: object | None) -> None:
+                max_w = 40
+                app_display = (
+                    (app_name[: max_w - 3] + "...") if len(app_name) > max_w else app_name
+                )
                 if isinstance(match, PackageMatch):
                     all_results.setdefault(app_name, []).append(match)
-                    summary.record_search_result(app_name, match)
-                    max_w = 40
-                    app_display = (
-                        (app_name[: max_w - 3] + "...") if len(app_name) > max_w else app_name
-                    )
                     pkg_info = f"{match.pkg_id} [{match.manager}] {match.pkg_version}"
                     mismatch_flag = " ⚠️ version mismatch" if match.version_mismatch else ""
                     logging.info(f"  {app_display:<42} found {pkg_info}{mismatch_flag}")
-                else:
-                    # Only record no-match once (from first manager to respond None)
-                    if not all_results.get(app_name):
-                        summary.record_search_result(app_name, None)
 
             for mgr in self._installable:
                 if mgr.is_available():
                     logging.info(f"  Searching {mgr.name}...")
                     mgr.search_many(unmanaged_apps, on_result=_on_search_result)
+
+            # After all managers searched — log apps with no match and tally stats
+            for app in unmanaged_apps:
+                app_name = app["name"]
+                if all_results.get(app_name):
+                    summary.record_search_result(app_name, all_results[app_name][0])
+                else:
+                    max_w = 40
+                    app_display = (
+                        (app_name[: max_w - 3] + "...") if len(app_name) > max_w else app_name
+                    )
+                    logging.info(f"  {app_display:<42} no match")
+                    summary.record_search_result(app_name, None)
 
             candidates = rank_candidates(
                 all_results,
