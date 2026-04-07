@@ -28,6 +28,7 @@ class PackageManager:
                  min_score: int = 0):
         self.winget_apps = {}
         self.choco_packages = set()
+        self.scoop_packages: Set[str] = set()
         self.installed_programs = []
         self.unmanaged_apps = []
         self.matches = []
@@ -40,6 +41,12 @@ class PackageManager:
         # Override the class-level FUZZY_MATCH_THRESHOLD when > 0.
         if min_score > 0:
             self.FUZZY_MATCH_THRESHOLD = min_score
+
+    # Default cache file path (~/.winget-choco-manager/state.json)
+    @staticmethod
+    def _default_cache_path() -> str:
+        import os
+        return os.path.join(os.path.expanduser('~'), '.winget-choco-manager', 'state.json')
 
     log = logging.getLogger(__name__)
 
@@ -289,6 +296,86 @@ class PackageManager:
         logging.info(f"✅ Found {len(self.choco_packages)} packages in Chocolatey")
         return True
 
+    def get_scoop_packages(self) -> bool:
+        """Get packages installed via Scoop (optional — skipped if Scoop not found)."""
+        stdout, stderr, code = self.run_command(['scoop', 'list'], timeout=30)
+        if code != 0:
+            # Scoop is not installed or not on PATH — skip gracefully.
+            logging.info("ℹ️  Scoop not found or unavailable — skipping Scoop check.")
+            return True
+
+        for line in stdout.split('\n'):
+            parts = line.split()
+            if parts:
+                name = parts[0].strip().lower()
+                if name and name not in ('name', '----'):
+                    self.scoop_packages.add(name)
+
+        if self.scoop_packages:
+            logging.info(f"✅ Found {len(self.scoop_packages)} packages in Scoop")
+        return True
+
+    def save_cache(self, cache_path: Optional[str] = None) -> None:
+        """Persist scan results to a JSON cache file for fast re-runs."""
+        import os
+        from datetime import datetime, timezone
+
+        if cache_path is None:
+            cache_path = self._default_cache_path()
+
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        state = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'unmanaged_apps': self.unmanaged_apps,
+            'matches': self.matches,
+        }
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+        logging.info(f"💾 Cache saved: {cache_path}")
+
+    def load_cache(self, cache_path: Optional[str] = None) -> bool:
+        """Load scan results from a JSON cache file.  Returns False if unavailable."""
+        import os
+
+        if cache_path is None:
+            cache_path = self._default_cache_path()
+
+        if not os.path.exists(cache_path):
+            logging.warning(f"⚠️  Cache file not found: {cache_path}")
+            return False
+
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            self.unmanaged_apps = state.get('unmanaged_apps', [])
+            self.matches = state.get('matches', [])
+            ts = state.get('timestamp', 'unknown')
+            logging.info(f"📂 Loaded cache from {cache_path} (scanned: {ts})")
+            return True
+        except (json.JSONDecodeError, KeyError) as e:
+            logging.warning(f"⚠️  Failed to load cache: {e}")
+            return False
+
+    @staticmethod
+    def _versions_differ(installed: str, choco: str) -> bool:
+        """Return True if the installed version and Chocolatey version differ at the major level.
+
+        Both versions are normalised to dotted numeric components; if either is
+        unknown/empty the comparison is skipped and False is returned.
+        """
+        def _major(ver: str) -> str:
+            ver = ver.strip()
+            if not ver or ver.lower() in ('unknown', 'n/a', ''):
+                return ''
+            parts = re.findall(r'\d+', ver)
+            return parts[0] if parts else ''
+
+        m_inst = _major(installed)
+        m_choco = _major(choco)
+        if not m_inst or not m_choco:
+            return False
+        return m_inst != m_choco
+
     def _is_managed_by_winget(self, display_name: str) -> bool:
         """Return True if the app name fuzzy-matches a WinGet-managed package."""
         name_lower = display_name.lower()
@@ -316,6 +403,10 @@ class PackageManager:
 
             # Skip if managed by Chocolatey (normalized key lookup)
             if normalized in self.choco_packages:
+                continue
+
+            # Skip if managed by Scoop (normalized key lookup)
+            if normalized in self.scoop_packages or display_name.lower() in self.scoop_packages:
                 continue
 
             # Skip if managed by WinGet (fuzzy match against JSON-parsed names)
@@ -395,11 +486,15 @@ class PackageManager:
                         package_version = best_version
 
             if package_id:
+                version_mismatch = self._versions_differ(
+                    app.get('version', ''), package_version or ''
+                )
                 self.matches.append({
                     'app_name': app['name'],
                     'app_version': app['version'],
                     'choco_id': package_id,
-                    'choco_version': package_version
+                    'choco_version': package_version,
+                    'version_mismatch': version_mismatch,
                 })
 
             # Brief delay between network calls to avoid rate-limiting.
@@ -428,7 +523,8 @@ class PackageManager:
         for match in self.matches:
             max_width = 39
             app_display = (match['app_name'][:max_width - 3] + '...') if len(match['app_name']) > max_width else match['app_name']
-            logging.info(f"{app_display:<40} {match['choco_id']:<30}")
+            mismatch_flag = ' ⚠️ version mismatch' if match.get('version_mismatch') else ''
+            logging.info(f"{app_display:<40} {match['choco_id']:<30}{mismatch_flag}")
 
         logging.info("-" * 70)
 
@@ -588,38 +684,55 @@ class PackageManager:
             return False
 
     def run(self, auto: bool = False, export_only: bool = False,
-            output_path: Optional[str] = None) -> int:
+            output_path: Optional[str] = None,
+            use_cache: bool = False, cache_path: Optional[str] = None) -> int:
         """Main execution flow"""
         logging.info("=" * 70)
         logging.info("  Chocolatey Registration for Apps Not Managed by WinGet")
         logging.info("  Version 1.2 - With argparse, logging, and dry-run support")
         logging.info("=" * 70)
 
-        # Check prerequisites
-        if not self.check_prerequisites():
-            return 1
+        if use_cache:
+            if not self.load_cache(cache_path):
+                logging.warning("Cache unavailable — falling back to full scan.")
+                use_cache = False
 
-        # Step 1: Get WinGet packages
-        if not self.get_winget_packages():
-            logging.error("\n❌ Failed at Step 1. Cannot continue.")
-            return 1
+        if not use_cache:
+            # Check prerequisites
+            if not self.check_prerequisites():
+                return 1
 
-        # Step 2: Get installed programs
-        if not self.get_installed_programs():
-            logging.error("\n❌ Failed at Step 2. Cannot continue.")
-            return 1
+            # Step 1: Get WinGet packages
+            if not self.get_winget_packages():
+                logging.error("\n❌ Failed at Step 1. Cannot continue.")
+                return 1
 
-        # Step 3: Get Chocolatey packages
-        if not self.get_chocolatey_packages():
-            logging.error("\n❌ Failed at Step 3. Cannot continue.")
-            return 1
+            # Step 1b: Get Scoop packages (optional)
+            self.get_scoop_packages()
 
-        # Step 4: Find unmanaged apps
-        if not self.find_unmanaged_apps():
-            return 0
+            # Step 2: Get installed programs
+            if not self.get_installed_programs():
+                logging.error("\n❌ Failed at Step 2. Cannot continue.")
+                return 1
 
-        # Step 5: Search for matches
-        if not self.search_chocolatey_matches():
+            # Step 3: Get Chocolatey packages
+            if not self.get_chocolatey_packages():
+                logging.error("\n❌ Failed at Step 3. Cannot continue.")
+                return 1
+
+            # Step 4: Find unmanaged apps
+            if not self.find_unmanaged_apps():
+                return 0
+
+            # Step 5: Search for matches
+            if not self.search_chocolatey_matches():
+                return 0
+
+            # Save results to cache for future --use-cache runs
+            self.save_cache(cache_path)
+
+        if not self.matches:
+            logging.info("\n🎉 No unmanaged apps with Chocolatey matches found.")
             return 0
 
         # Display results
@@ -683,6 +796,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         '--min-score', type=int, default=0, metavar='INT',
         help='Minimum fuzzy-match confidence threshold (0-100, default 60).',
     )
+    parser.add_argument(
+        '--use-cache', action='store_true',
+        help='Skip full scan and use cached results from a previous run.',
+    )
+    parser.add_argument(
+        '--cache-file', metavar='PATH',
+        help='Path to the JSON cache file (default: ~/.winget-choco-manager/state.json).',
+    )
     return parser
 
 
@@ -723,6 +844,8 @@ def main():
             auto=args.auto,
             export_only=args.export_only,
             output_path=args.output,
+            use_cache=args.use_cache,
+            cache_path=args.cache_file,
         )
         sys.exit(exit_code)
     except KeyboardInterrupt:

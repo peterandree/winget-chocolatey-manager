@@ -457,3 +457,124 @@ class TestLogging:
         _logging.getLogger().handlers.clear()
         _configure_logging(quiet=False, log_file=None)
         assert _logging.getLogger().level == _logging.INFO
+
+
+# ---------------------------------------------------------------------------
+# Issue #10 -- Scoop integration
+# ---------------------------------------------------------------------------
+
+class TestScoopPackages:
+    def test_scoop_not_installed_returns_true(self):
+        pm = PackageManager()
+        with patch.object(PackageManager, 'run_command', return_value=('', 'not found', 1)):
+            result = pm.get_scoop_packages()
+        assert result is True
+        assert len(pm.scoop_packages) == 0
+
+    def test_scoop_packages_parsed(self):
+        pm = PackageManager()
+        scoop_output = 'Name  Version  Source\n----  -------  ------\ngit   2.44.0   main\nvscode 1.89   extras\n'
+        with patch.object(PackageManager, 'run_command', return_value=(scoop_output, '', 0)):
+            pm.get_scoop_packages()
+        assert 'git' in pm.scoop_packages
+        assert 'vscode' in pm.scoop_packages
+
+    def test_scoop_apps_excluded_from_unmanaged(self):
+        pm = PackageManager()
+        pm.scoop_packages = {'git'}
+        pm.choco_packages = set()
+        pm.winget_apps = {}
+        pm.installed_programs = [{'DisplayName': 'git', 'DisplayVersion': '2.44', 'Publisher': 'X'}]
+        pm.find_unmanaged_apps()
+        assert all(app['name'].lower() != 'git' for app in pm.unmanaged_apps)
+
+
+# ---------------------------------------------------------------------------
+# Issue #9 -- Version comparison
+# ---------------------------------------------------------------------------
+
+class TestVersionComparison:
+    def test_same_major_version_no_mismatch(self):
+        assert PackageManager._versions_differ('2.44.0', '2.3.0') is False
+
+    def test_different_major_version_is_mismatch(self):
+        assert PackageManager._versions_differ('1.9.0', '2.0.0') is True
+
+    def test_unknown_version_no_mismatch(self):
+        assert PackageManager._versions_differ('Unknown', '2.0.0') is False
+
+    def test_empty_version_no_mismatch(self):
+        assert PackageManager._versions_differ('', '2.0.0') is False
+
+    def test_version_mismatch_flag_set_in_match(self):
+        pm = PackageManager()
+        pm.unmanaged_apps = [{'name': 'Git', 'version': '1.9.0'}]
+
+        def fake_run(cmd, **kwargs):
+            if '--exact' in cmd:
+                return 'git|2.0.0\n', '', 0
+            return '', '', 1
+
+        with patch.object(PackageManager, 'run_command', side_effect=fake_run):
+            with patch.object(PackageManager, 'get_choco_major_version', return_value=1):
+                with patch('time.sleep'):
+                    pm.search_chocolatey_matches()
+
+        assert pm.matches, 'Expected at least one match'
+        assert pm.matches[0]['version_mismatch'] is True
+
+    def test_version_match_flag_not_set(self):
+        pm = PackageManager()
+        pm.unmanaged_apps = [{'name': 'Git', 'version': '2.44.0'}]
+
+        def fake_run(cmd, **kwargs):
+            if '--exact' in cmd:
+                return 'git|2.0.0\n', '', 0
+            return '', '', 1
+
+        with patch.object(PackageManager, 'run_command', side_effect=fake_run):
+            with patch.object(PackageManager, 'get_choco_major_version', return_value=1):
+                with patch('time.sleep'):
+                    pm.search_chocolatey_matches()
+
+        assert pm.matches
+        assert pm.matches[0]['version_mismatch'] is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #11 -- JSON cache
+# ---------------------------------------------------------------------------
+
+class TestCache:
+    def test_save_and_load_roundtrip(self, tmp_path):
+        pm = PackageManager()
+        pm.unmanaged_apps = [{'name': 'Git', 'version': '2.44'}]
+        pm.matches = [{'app_name': 'Git', 'choco_id': 'git', 'version_mismatch': False}]
+        cache_file = str(tmp_path / 'state.json')
+        pm.save_cache(cache_file)
+
+        pm2 = PackageManager()
+        result = pm2.load_cache(cache_file)
+        assert result is True
+        assert pm2.matches == pm.matches
+        assert pm2.unmanaged_apps == pm.unmanaged_apps
+
+    def test_load_missing_cache_returns_false(self, tmp_path):
+        pm = PackageManager()
+        result = pm.load_cache(str(tmp_path / 'nonexistent.json'))
+        assert result is False
+
+    def test_cache_file_has_timestamp(self, tmp_path):
+        pm = PackageManager()
+        pm.matches = []
+        pm.unmanaged_apps = []
+        cache_file = str(tmp_path / 'state.json')
+        pm.save_cache(cache_file)
+        with open(cache_file) as f:
+            data = json.load(f)
+        assert 'timestamp' in data
+
+    def test_use_cache_argparse_flag(self):
+        from register_unmanaged_apps import _build_arg_parser
+        args = _build_arg_parser().parse_args(['--use-cache'])
+        assert args.use_cache is True
