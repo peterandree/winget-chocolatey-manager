@@ -1,4 +1,4 @@
-"""Tests for register_unmanaged_apps.py"""
+"""Tests for register_unmanaged_apps.py (backward-compat shim)"""
 import sys
 import os
 import json
@@ -7,7 +7,6 @@ import pytest
 from unittest.mock import patch, MagicMock, call
 from io import StringIO
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from register_unmanaged_apps import PackageManager
 
 

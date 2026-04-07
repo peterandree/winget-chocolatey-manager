@@ -82,6 +82,76 @@ class TestRegisterPackages:
         result = register_packages(legacy, runner=runner)
         assert result is True
 
+    def test_multiple_packages_sleep_between(self):
+        sleep_calls = []
+
+        def runner(cmd, **kwargs):
+            return "", "", 0
+
+        import unittest.mock as _mock
+        with _mock.patch("wincoman.installer.time") as mock_time:
+            register_packages([_match("Git", "git"), _match("Node", "nodejs")], runner=runner)
+        # sleep(0.5) should be called once (between the two installs)
+        mock_time.sleep.assert_called_once_with(0.5)
+
+    def test_failed_package_logged(self, caplog):
+        def runner(cmd, **kwargs):
+            return "", "some error", 1
+
+        with caplog.at_level(logging.ERROR):
+            register_packages([_match()], runner=runner)
+        assert "Registration failed" in caplog.text
+
     def test_empty_list_returns_true(self):
         result = register_packages([])
+        assert result is True
+
+
+class TestRegisterInteractive:
+    def test_choice_4_exits_without_registering(self):
+        from wincoman.installer import register_interactive
+
+        result = register_interactive([_match()], input_fn=lambda _: "4")
+        assert result is True
+
+    def test_choice_1_registers_all(self):
+        from wincoman.installer import register_interactive
+
+        installed = []
+
+        def runner(cmd, **kwargs):
+            installed.append(cmd)
+            return "", "", 0
+
+        result = register_interactive(
+            [_match("Git", "git")],
+            input_fn=lambda _: "1",
+            runner=runner,
+        )
+        assert result is True
+        assert any("git" in c for c in installed)
+
+    def test_choice_2_select_yes(self):
+        from wincoman.installer import register_interactive
+
+        responses = iter(["2", "y"])
+
+        def runner(cmd, **kwargs):
+            return "", "", 0
+
+        result = register_interactive(
+            [_match()],
+            input_fn=lambda _: next(responses),
+            runner=runner,
+        )
+        assert result is True
+
+    def test_choice_2_select_none_exits(self):
+        from wincoman.installer import register_interactive
+
+        responses = iter(["2", "n"])
+        result = register_interactive(
+            [_match()],
+            input_fn=lambda _: next(responses),
+        )
         assert result is True

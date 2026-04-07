@@ -630,37 +630,9 @@ def _configure_logging(quiet: bool, log_file: Optional[str]) -> None:
 
 
 def main():
-    """Entry point"""
-    parser = _build_arg_parser()
-    args = parser.parse_args()
-
-    _configure_logging(quiet=args.quiet, log_file=args.log_file)
-
-    try:
-        manager = PackageManager(
-            exclude_microsoft=args.exclude_microsoft,
-            dry_run=args.dry_run,
-            min_score=args.min_score,
-        )
-        if args.dry_run:
-            logging.info("🔍 DRY-RUN mode — no packages will be installed.")
-
-        exit_code = manager.run(
-            auto=args.auto,
-            export_only=args.export_only,
-            output_path=args.output,
-            use_cache=args.use_cache,
-            cache_path=args.cache_file,
-        )
-        sys.exit(exit_code)
-    except KeyboardInterrupt:
-        logging.warning("\n⚠️  Interrupted by user. Exiting...")
-        sys.exit(130)
-    except Exception as e:
-        logging.error(f"\n❌ Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    """Entry point — delegates to wincoman.cli.main() (deprecated shim)."""
+    from wincoman.cli import main as _wincoman_main
+    _wincoman_main()
 
 if __name__ == '__main__':
     main()
