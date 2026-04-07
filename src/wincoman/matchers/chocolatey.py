@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from wincoman.config import ScanConfig
@@ -109,32 +110,39 @@ class ChocolateyManager(SearchablePackageManager):
         *,
         progress_cb: Optional[Callable[[int, int], None]] = None,
     ) -> list[PackageMatch]:
-        """Search the repository for all apps in *apps*.
+        """Search the repository for all apps in *apps* concurrently.
 
         Each element of *apps* must have at least a ``'name'`` key.
+        Uses a thread pool sized by ``ScanConfig.search_workers``.
         """
-        results: list[PackageMatch] = []
         total = len(apps)
-        for i, app in enumerate(apps, 1):
-            if progress_cb:
-                progress_cb(i, total)
-            match = self.search(app["name"])
-            if match is not None:
-                # Enrich with installed-app metadata
-                app_ver = app.get("version", "")
-                mismatch = versions_differ(app_ver, match.pkg_version)
-                results.append(
-                    PackageMatch(
-                        app_name=app["name"],
-                        app_version=app_ver,
-                        pkg_id=match.pkg_id,
-                        pkg_version=match.pkg_version,
-                        version_mismatch=mismatch,
-                        manager=self.name,
+        workers = min(self._config.search_workers, total) if total else 1
+        results: list[PackageMatch] = []
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_app = {
+                pool.submit(self.search, app["name"]): app for app in apps
+            }
+            for future in as_completed(future_to_app):
+                completed += 1
+                if progress_cb:
+                    progress_cb(completed, total)
+                app = future_to_app[future]
+                match = future.result()
+                if match is not None:
+                    app_ver = app.get("version", "")
+                    mismatch = versions_differ(app_ver, match.pkg_version)
+                    results.append(
+                        PackageMatch(
+                            app_name=app["name"],
+                            app_version=app_ver,
+                            pkg_id=match.pkg_id,
+                            pkg_version=match.pkg_version,
+                            version_mismatch=mismatch,
+                            manager=self.name,
+                        )
                     )
-                )
-            if i < total:
-                self._sleep(self._config.search_delay)
         return results
 
     # ------------------------------------------------------------------

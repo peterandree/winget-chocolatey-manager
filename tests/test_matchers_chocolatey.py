@@ -136,22 +136,58 @@ class TestChocolateyManagerSearchMany:
         assert len(results) == 1
         assert results[0].pkg_id == "git"
 
-    def test_sleep_called_between_searches(self):
-        sleep_calls = []
+    def test_concurrent_search_dispatches_all_apps(self):
+        """Issue #30: all apps are dispatched to the thread pool."""
+        import threading
+
+        search_threads: set[int] = set()
 
         def runner(cmd, **kwargs):
             if cmd == ["choco", "--version"]:
                 return "2.0.0", "", 0
+            search_threads.add(threading.current_thread().ident)
             return CHOCO_SEARCH_EXACT, "", 0
 
-        mgr = ChocolateyManager(
-            runner=runner, sleep=lambda d: sleep_calls.append(d)
-        )
+        config = ScanConfig(min_score=60, search_workers=3)
+        mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
 
-        apps = [{"name": "git", "version": ""}, {"name": "nodejs", "version": ""}]
+        apps = [
+            {"name": "git", "version": ""},
+            {"name": "nodejs", "version": ""},
+            {"name": "python", "version": ""},
+        ]
+        results = mgr.search_many(apps)
+        assert len(results) == 3
+        # Searches ran in thread pool threads (may reuse threads, but at least 1)
+        assert len(search_threads) >= 1
+
+    def test_search_workers_limits_concurrency(self):
+        """search_workers caps the thread pool size."""
+        import threading
+
+        max_concurrent = 0
+        current_concurrent = 0
+        lock = threading.Lock()
+
+        def runner(cmd, **kwargs):
+            nonlocal max_concurrent, current_concurrent
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
+            with lock:
+                current_concurrent += 1
+                max_concurrent = max(max_concurrent, current_concurrent)
+            import time as _time
+            _time.sleep(0.05)
+            with lock:
+                current_concurrent -= 1
+            return CHOCO_SEARCH_EXACT, "", 0
+
+        config = ScanConfig(min_score=60, search_workers=2)
+        mgr = ChocolateyManager(config=config, runner=runner, sleep=lambda _: None)
+
+        apps = [{"name": f"app{i}", "version": ""} for i in range(6)]
         mgr.search_many(apps)
-        # sleep called once between the two searches (not after the last one)
-        assert len(sleep_calls) == 1
+        assert max_concurrent <= 2, f"Expected ≤2 concurrent, got {max_concurrent}"
 
     def test_progress_callback_called(self):
         progress = []

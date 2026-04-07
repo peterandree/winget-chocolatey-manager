@@ -34,6 +34,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="Skip full scan and use cached results from a previous run.")
     parser.add_argument("--cache-file", metavar="PATH",
                         help="Path to the JSON cache file.")
+    parser.add_argument("--search-workers", type=int, default=5, metavar="N",
+                        help="Number of concurrent Chocolatey search threads (default 5).")
     return parser
 
 

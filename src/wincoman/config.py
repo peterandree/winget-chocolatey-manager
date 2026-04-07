@@ -52,6 +52,9 @@ class ScanConfig:
     search_delay: float = 0.1
     """Delay (seconds) between successive choco search calls."""
 
+    search_workers: int = 5
+    """Number of concurrent threads for Chocolatey repository searches."""
+
     # ── Logging ──────────────────────────────────────────────────────────────
     quiet: bool = False
     """Suppress INFO output; show only warnings and errors."""
@@ -73,4 +76,5 @@ class ScanConfig:
             cache_path=getattr(ns, "cache_file", None) or _default_cache_path(),
             quiet=getattr(ns, "quiet", False),
             log_file=getattr(ns, "log_file", None),
+            search_workers=getattr(ns, "search_workers", 5) or 5,
         )

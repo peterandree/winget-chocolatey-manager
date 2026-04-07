@@ -51,6 +51,12 @@ class TestBuildArgParser:
     def test_log_file_flag(self):
         assert self._parse("--log-file", "/tmp/app.log").log_file == "/tmp/app.log"
 
+    def test_search_workers_flag(self):
+        assert self._parse("--search-workers", "10").search_workers == 10
+
+    def test_search_workers_default(self):
+        assert self._parse().search_workers == 5
+
     def test_prog_name_is_wincoman(self):
         assert _build_arg_parser().prog == "wincoman"
 
