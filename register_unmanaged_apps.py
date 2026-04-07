@@ -23,9 +23,17 @@ class PackageManager:
         self.unmanaged_apps = []
         self.matches = []
 
+    # Default timeout (seconds) for external commands. choco search can be slow on
+    # large repositories, but 60 s is plenty; increase if needed.
+    COMMAND_TIMEOUT = 60
+    # Delay (seconds) between successive choco search calls to avoid rate-limiting.
+    SEARCH_DELAY = 0.1
+
     @staticmethod
-    def run_command(cmd: List[str], capture_output=True, shell=False) -> Tuple[str, str, int]:
+    def run_command(cmd: List[str], capture_output=True, shell=False, timeout: Optional[int] = None) -> Tuple[str, str, int]:
         """Run a command and return stdout, stderr, and return code"""
+        if timeout is None:
+            timeout = PackageManager.COMMAND_TIMEOUT
         try:
             result = subprocess.run(
                 cmd,
@@ -33,9 +41,14 @@ class PackageManager:
                 text=True,
                 encoding='utf-8',
                 errors='ignore',
-                shell=shell
+                shell=shell,
+                timeout=timeout,
             )
             return result.stdout, result.stderr, result.returncode
+        except subprocess.TimeoutExpired:
+            cmd_str = cmd if isinstance(cmd, str) else ' '.join(str(c) for c in cmd)
+            print(f"⚠️  Command timed out after {timeout}s: {cmd_str}")
+            return "", f"Command timed out after {timeout}s", 1
         except FileNotFoundError as e:
             return "", f"Command not found: {cmd[0]}", 1
         except Exception as e:
@@ -301,6 +314,10 @@ class PackageManager:
                     'choco_id': package_id,
                     'choco_version': package_version
                 })
+
+            # Brief delay between network calls to avoid rate-limiting.
+            if i < total:
+                time.sleep(self.SEARCH_DELAY)
 
         if not self.matches:
             print("\n⚠️  No matching Chocolatey packages found.")

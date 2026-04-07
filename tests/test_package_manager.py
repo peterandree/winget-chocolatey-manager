@@ -2,6 +2,7 @@
 import sys
 import os
 import json
+import subprocess
 import pytest
 from unittest.mock import patch, MagicMock, call
 from io import StringIO
@@ -102,3 +103,30 @@ class TestGetInstalledProgramsDedup:
         ])
         result = self._run_with_json(data)
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #14 — run_command timeout
+# ---------------------------------------------------------------------------
+
+class TestRunCommandTimeout:
+    def test_timeout_returns_error_tuple(self):
+        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd=['choco'], timeout=60)):
+            stdout, stderr, code = PackageManager.run_command(['choco', 'search', 'something'])
+        assert stdout == ''
+        assert 'timed out' in stderr.lower()
+        assert code == 1
+
+    def test_timeout_passed_to_subprocess(self):
+        with patch('subprocess.run', return_value=MagicMock(stdout='ok', stderr='', returncode=0)) as mock_run:
+            PackageManager.run_command(['choco', '--version'])
+        mock_run.assert_called_once()
+        _, kwargs = mock_run.call_args
+        assert 'timeout' in kwargs
+        assert kwargs['timeout'] == PackageManager.COMMAND_TIMEOUT
+
+    def test_custom_timeout_respected(self):
+        with patch('subprocess.run', return_value=MagicMock(stdout='ok', stderr='', returncode=0)) as mock_run:
+            PackageManager.run_command(['choco', '--version'], timeout=5)
+        _, kwargs = mock_run.call_args
+        assert kwargs['timeout'] == 5
