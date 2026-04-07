@@ -255,6 +255,51 @@ class TestSearchManyOnResult:
         assert match is None
 
 
+class TestChocolateyManagerInstall:
+    """Issue #38: ChocolateyManager.install() dispatches choco install."""
+
+    def _match(self, pkg_id="git"):
+        return PackageMatch("Git", "2.44", pkg_id, "2.44.0", False, "chocolatey")
+
+    def test_install_success(self):
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
+            assert "install" in cmd
+            return "", "", 0
+
+        mgr = ChocolateyManager(runner=runner)
+        assert mgr.install(self._match()) is True
+
+    def test_install_failure_returns_false(self):
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
+            return "", "package not found", 1
+
+        mgr = ChocolateyManager(runner=runner)
+        assert mgr.install(self._match("nonexistent")) is False
+
+    def test_install_dry_run(self, caplog):
+        import logging
+
+        called = []
+
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.0.0", "", 0
+            called.append(cmd)
+            return "", "", 0
+
+        mgr = ChocolateyManager(runner=runner)
+        with caplog.at_level(logging.INFO):
+            result = mgr.install(self._match(), dry_run=True)
+        assert result is True
+        install_calls = [c for c in called if "install" in c]
+        assert len(install_calls) == 0
+        assert "DRY-RUN" in caplog.text
+
+
 class TestChocoMajorVersionCaching:
     """Issue #31: _choco_major_version() must be called at most once per instance."""
 

@@ -12,12 +12,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from wincoman.config import ScanConfig
-from wincoman.matchers.base import PackageMatch, SearchablePackageManager
+from wincoman.matchers.base import InstallablePackageManager, PackageMatch
 from wincoman.scoring import fuzzy_score, normalize_name, versions_differ
 from wincoman.shell import get_choco_major_version, run_command
 
 
-class ChocolateyManager(SearchablePackageManager):
+class ChocolateyManager(InstallablePackageManager):
     """Adapter for Chocolatey (choco)."""
 
     def __init__(
@@ -147,6 +147,21 @@ class ChocolateyManager(SearchablePackageManager):
                 if on_result is not None:
                     on_result(app["name"], enriched)
         return results
+
+    def install(self, match: PackageMatch, *, dry_run: bool = False) -> bool:
+        """Install *match* via ``choco install``.
+
+        Returns ``True`` on success or dry-run, ``False`` on failure.
+        """
+        cmd = ["choco", "install", match.pkg_id, "-y", "--force"]
+        if dry_run:
+            logging.info(f"    [DRY-RUN] Would run: {' '.join(cmd)}")
+            return True
+        _, stderr, code = self._runner(cmd)
+        if code != 0:
+            logging.error(f"    choco install failed: {stderr[:200]}")
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Internal helpers

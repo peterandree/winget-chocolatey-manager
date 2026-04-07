@@ -1,34 +1,37 @@
 """WinGet package manager adapter.
 
-Implements :class:`BasePackageManager` for WinGet (Windows Package Manager).
-WinGet is a list-only source — it has no remote search API accessible from
-the command line without interactive output.
+Implements :class:`InstallablePackageManager` for WinGet (Windows Package Manager).
+Supports both detection (``winget list``) and search/install
+(``winget search`` / ``winget install``).
 """
 from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from rapidfuzz import fuzz, process
 
-from wincoman.matchers.base import BasePackageManager
-from wincoman.scoring import normalize_name
+from wincoman.matchers.base import InstallablePackageManager, PackageMatch
+from wincoman.scoring import normalize_name, versions_differ
 from wincoman.shell import run_command
 
 _DEFAULT_MIN_SCORE = 60
 
 
-class WinGetManager(BasePackageManager):
+class WinGetManager(InstallablePackageManager):
     """Adapter for the Windows Package Manager (winget)."""
 
     def __init__(
         self,
         min_score: int = _DEFAULT_MIN_SCORE,
         runner: Optional[Callable] = None,
+        search_workers: int = 5,
     ) -> None:
         self._min_score = min_score
         self._runner = runner or run_command
+        self._search_workers = search_workers
         self._cache: Optional[dict[str, str]] = None  # name_lower -> id
         self._available: Optional[bool] = None
 
@@ -48,12 +51,7 @@ class WinGetManager(BasePackageManager):
         return {normalize_name(n) for n in self._get_name_map()}
 
     def is_managed(self, display_name: str) -> bool:
-        """Return True if *display_name* matches a WinGet-managed package.
-
-        Uses an O(1) exact lookup first, then falls back to
-        ``rapidfuzz.process.extractOne`` which short-circuits on the first
-        candidate above *min_score*.
-        """
+        """Return True if *display_name* matches a WinGet-managed package."""
         name_map = self._get_name_map()
         name_lower = display_name.lower()
         if name_lower in name_map:
@@ -67,6 +65,120 @@ class WinGetManager(BasePackageManager):
             score_cutoff=self._min_score,
         )
         return result is not None
+
+    def search(self, app_name: str) -> Optional[PackageMatch]:
+        """Search the WinGet repository for *app_name*.
+
+        Runs ``winget search --query <name> --output json`` and returns the
+        best fuzzy match above the configured threshold, or ``None``.
+        """
+        stdout, _, code = self._runner(
+            [
+                "winget", "search",
+                "--query", app_name,
+                "--output", "json",
+                "--accept-source-agreements",
+            ]
+        )
+        if code != 0 or not stdout.strip():
+            return None
+
+        try:
+            results = json.loads(stdout)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        if not isinstance(results, list) or not results:
+            return None
+
+        # Score every candidate; pick the best above threshold
+        best_match: Optional[PackageMatch] = None
+        best_score = 0
+        for pkg in results:
+            candidate_name = (pkg.get("Name") or "").strip()
+            candidate_id = (pkg.get("Id") or "").strip()
+            candidate_ver = (pkg.get("Version") or "").strip()
+            if not candidate_id:
+                continue
+            score_name = fuzz.WRatio(app_name, candidate_name)
+            score_id = fuzz.WRatio(app_name, candidate_id)
+            score = max(score_name, score_id)
+            if score > best_score:
+                best_score = score
+                best_match = PackageMatch(
+                    app_name=app_name,
+                    app_version="",
+                    pkg_id=candidate_id,
+                    pkg_version=candidate_ver,
+                    version_mismatch=False,
+                    manager=self.name,
+                )
+
+        if best_score >= self._min_score and best_match is not None:
+            return best_match
+        return None
+
+    def search_many(
+        self,
+        apps: list[dict],
+        *,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+        on_result: Optional[Callable[[str, Optional[PackageMatch]], None]] = None,
+    ) -> list[PackageMatch]:
+        """Search the WinGet repository for all apps concurrently."""
+        total = len(apps)
+        workers = min(self._search_workers, total) if total else 1
+        results: list[PackageMatch] = []
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_app = {
+                pool.submit(self.search, app["name"]): app for app in apps
+            }
+            for future in as_completed(future_to_app):
+                completed += 1
+                if progress_cb:
+                    progress_cb(completed, total)
+                app = future_to_app[future]
+                match = future.result()
+                enriched: Optional[PackageMatch] = None
+                if match is not None:
+                    app_ver = app.get("version", "")
+                    mismatch = versions_differ(app_ver, match.pkg_version)
+                    enriched = PackageMatch(
+                        app_name=app["name"],
+                        app_version=app_ver,
+                        pkg_id=match.pkg_id,
+                        pkg_version=match.pkg_version,
+                        version_mismatch=mismatch,
+                        manager=self.name,
+                    )
+                    results.append(enriched)
+                if on_result is not None:
+                    on_result(app["name"], enriched)
+        return results
+
+    def install(self, match: PackageMatch, *, dry_run: bool = False) -> bool:
+        """Install *match* via ``winget install``.
+
+        Returns ``True`` on success or dry-run, ``False`` on failure.
+        """
+        cmd = [
+            "winget", "install",
+            "--id", match.pkg_id,
+            "--exact",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+        ]
+        if dry_run:
+            logging.info(f"    [DRY-RUN] Would run: {' '.join(cmd)}")
+            return True
+        _, stderr, code = self._runner(cmd)
+        if code != 0:
+            logging.error(f"    winget install failed: {stderr[:200]}")
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Internal helpers

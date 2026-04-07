@@ -2,7 +2,8 @@
 
 Every adapter (WinGet, Chocolatey, Scoop, or future additions) must implement
 ``BasePackageManager``.  Adapters with a searchable remote repository additionally
-implement ``SearchablePackageManager``.
+implement ``SearchablePackageManager``.  Adapters that can also install packages
+implement ``InstallablePackageManager``.
 
 Adding a new adapter requires only creating the adapter module — no changes to
 ``detector.py``, ``runner.py``, or any other orchestration code.
@@ -10,7 +11,7 @@ Adding a new adapter requires only creating the adapter module — no changes to
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 
@@ -26,12 +27,27 @@ class PackageMatch:
     manager: str  # e.g. "chocolatey", "winget", "scoop"
 
 
-class BasePackageManager(ABC):
-    """Minimum contract every adapter must satisfy.
+@dataclass(frozen=True)
+class AppCandidates:
+    """All package-repo candidates for a single unmanaged app.
 
-    Implementing a new adapter requires only this file and the adapter
-    module — no changes to ``detector.py`` or ``runner.py``.
+    *primary* is the highest-preference match (driven by ``MANAGER_PREFERENCE``).
+    *alternatives* are the remaining matches, ordered by preference.
     """
+
+    app_name: str
+    app_version: str
+    primary: PackageMatch
+    alternatives: list[PackageMatch] = field(default_factory=list)
+
+    @property
+    def all_matches(self) -> list[PackageMatch]:
+        """Primary first, then alternatives."""
+        return [self.primary] + list(self.alternatives)
+
+
+class BasePackageManager(ABC):
+    """Minimum contract every adapter must satisfy."""
 
     @property
     @abstractmethod
@@ -47,34 +63,21 @@ class BasePackageManager(ABC):
 
     @abstractmethod
     def list_managed(self) -> set[str]:
-        """Return the set of *normalised* package names this manager owns.
-
-        Normalisation must be consistent with :func:`wincoman.scoring.normalize_name`.
-        Called once per scan; result may be cached by the adapter.
-        """
+        """Return the set of *normalised* package names this manager owns."""
 
     @abstractmethod
     def is_managed(self, display_name: str) -> bool:
-        """Return True if *display_name* (raw registry string) is managed here.
-
-        Implementations may use exact lookup first, then fuzzy fallback.
-        Called once per installed program per manager.
-        """
+        """Return True if *display_name* (raw registry string) is managed here."""
 
 
 class SearchablePackageManager(BasePackageManager, ABC):
-    """Extended contract for managers whose repository can be searched.
-
-    Only managers with a remote/searchable catalogue need implement this.
-    WinGet and Scoop use list-only adapters; Chocolatey implements this mixin.
-    """
+    """Extended contract for managers whose repository can be searched."""
 
     @abstractmethod
     def search(self, app_name: str) -> Optional[PackageMatch]:
         """Search the repository for *app_name*.
 
-        Returns a :class:`PackageMatch` if a candidate scores at or above the
-        configured fuzzy threshold, otherwise ``None``.
+        Returns a :class:`PackageMatch` on success, ``None`` otherwise.
         **Never raises** — return ``None`` on any subprocess or network error.
         """
 
@@ -86,10 +89,21 @@ class SearchablePackageManager(BasePackageManager, ABC):
         progress_cb: Optional[Callable[[int, int], None]] = None,
         on_result: Optional[Callable[[str, Optional["PackageMatch"]], None]] = None,
     ) -> list[PackageMatch]:
-        """Batch search with optional per-item callbacks.
+        """Batch search with optional per-item callbacks."""
 
-        *progress_cb* fires after each item with ``(completed, total)``.
-        *on_result* fires after each item with ``(app_name, match_or_None)``.
-        Default implementation loops over :meth:`search`;
-        adapters may override for bulk API calls.
+
+class InstallablePackageManager(SearchablePackageManager, ABC):
+    """Full contract: search the repo **and** install packages from it."""
+
+    @abstractmethod
+    def install(self, match: PackageMatch, *, dry_run: bool = False) -> bool:
+        """Install the package identified by *match*.
+
+        Args:
+            match: The resolved package to install.
+            dry_run: When *True*, log what would be done but do not execute.
+
+        Returns:
+            ``True`` on success (or dry-run), ``False`` on failure.
+        **Never raises.**
         """

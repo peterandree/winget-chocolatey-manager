@@ -1,8 +1,10 @@
-"""Tests for src/wincoman/matchers/base.py (Issue #22)."""
+"""Tests for src/wincoman/matchers/base.py (Issues #22, #38)."""
 import pytest
 
 from wincoman.matchers.base import (
+    AppCandidates,
     BasePackageManager,
+    InstallablePackageManager,
     PackageMatch,
     SearchablePackageManager,
 )
@@ -212,3 +214,80 @@ class TestMatchers__init__:
         assert BasePackageManager is not None
         assert PackageMatch is not None
         assert SearchablePackageManager is not None
+
+
+# ---------------------------------------------------------------------------
+# AppCandidates (Issue #38/#39)
+# ---------------------------------------------------------------------------
+
+
+def _pm(pkg_id, manager="winget"):
+    return PackageMatch("Git", "2.44", pkg_id, "2.44.0", False, manager)
+
+
+class TestAppCandidates:
+    def test_all_matches_primary_only(self):
+        cand = AppCandidates("Git", "2.44", primary=_pm("Git.Git"))
+        assert cand.all_matches == [_pm("Git.Git")]
+
+    def test_all_matches_with_alternatives(self):
+        cand = AppCandidates(
+            "Git", "2.44",
+            primary=_pm("Git.Git"),
+            alternatives=[_pm("git", "chocolatey")],
+        )
+        assert len(cand.all_matches) == 2
+        assert cand.all_matches[0].manager == "winget"
+        assert cand.all_matches[1].manager == "chocolatey"
+
+    def test_is_frozen(self):
+        cand = AppCandidates("Git", "2.44", primary=_pm("Git.Git"))
+        with pytest.raises((AttributeError, TypeError)):
+            cand.app_name = "Other"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# InstallablePackageManager ABC (Issue #38)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallablePackageManagerABC:
+    def test_cannot_instantiate_without_install(self):
+        class NoInstall(InstallablePackageManager):
+            @property
+            def name(self):
+                return "test"
+            def is_available(self):
+                return True
+            def list_managed(self):
+                return set()
+            def is_managed(self, display_name):
+                return False
+            def search(self, app_name):
+                return None
+            def search_many(self, apps, *, progress_cb=None, on_result=None):
+                return []
+
+        with pytest.raises(TypeError):
+            NoInstall()  # type: ignore[abstract]
+
+    def test_complete_installable_subclass_instantiates(self):
+        class Complete(InstallablePackageManager):
+            @property
+            def name(self):
+                return "test"
+            def is_available(self):
+                return True
+            def list_managed(self):
+                return set()
+            def is_managed(self, display_name):
+                return False
+            def search(self, app_name):
+                return None
+            def search_many(self, apps, *, progress_cb=None, on_result=None):
+                return []
+            def install(self, match, *, dry_run=False):
+                return True
+
+        obj = Complete()
+        assert obj.name == "test"
