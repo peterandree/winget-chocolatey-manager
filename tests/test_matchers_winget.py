@@ -371,6 +371,48 @@ class TestWinGetManagerSearch:
         assert result.app_name == "HWiNFO64 7.28-4900"  # original name preserved
 
 
+WINGET_SEARCH_TABLE = (
+    "Name                Id                  Version  Source\n"
+    "------------------------------------------------------\n"
+    "Git                 Git.Git             2.53.0   winget\n"
+    "GitHub Desktop      GitHub.GitHubDesktop 3.5.7   winget\n"
+)
+
+
+class TestWinGetSearchTabularFallback:
+    """winget search --output json fails on v1.28; tabular fallback must work."""
+
+    def _make_runner(self, json_fails=True):
+        def runner(cmd, **kwargs):
+            if "list" in cmd:
+                return "[]", "", 0
+            if "--output" in cmd and "json" in cmd:
+                if json_fails:
+                    return "", "Argument not recognized", 1
+                return WINGET_SEARCH_JSON, "", 0
+            # Plain tabular search
+            return WINGET_SEARCH_TABLE, "", 0
+        return runner
+
+    def test_tabular_fallback_finds_git(self):
+        mgr = WinGetManager(runner=self._make_runner(json_fails=True))
+        result = mgr.search("Git")
+        assert result is not None
+        assert result.pkg_id == "Git.Git"
+        assert result.manager == "winget"
+
+    def test_json_preferred_when_available(self):
+        mgr = WinGetManager(runner=self._make_runner(json_fails=False))
+        result = mgr.search("Git")
+        assert result is not None
+        assert result.pkg_id == "Git.Git"
+
+    def test_tabular_returns_none_for_unknown(self):
+        mgr = WinGetManager(runner=self._make_runner(json_fails=True))
+        result = mgr.search("CompletelyUnknownApp99999")
+        assert result is None
+
+
 class TestWinGetManagerSearchMany:
     def _manager(self, search_json="[]"):
         def runner(cmd, **kwargs):

@@ -77,30 +77,18 @@ class WinGetManager(InstallablePackageManager):
     def search(self, app_name: str) -> Optional[PackageMatch]:
         """Search the WinGet repository for *app_name*.
 
-        Runs ``winget search --query <name> --output json`` and returns the
-        best fuzzy match above the configured threshold, or ``None``.
+        Tries ``winget search --query <name> --output json`` first.  If the
+        ``--output`` flag is not supported (winget < 1.5), falls back to
+        parsing the plain tabular output.
 
         Version suffixes are stripped from *app_name* before querying so that
         display names like ``"HWiNFO64 7.28-4900"`` resolve correctly.
         """
         query = strip_version_suffix(app_name)
-        stdout, _, code = self._runner(
-            [
-                "winget", "search",
-                "--query", query,
-                "--output", "json",
-                "--accept-source-agreements",
-            ]
-        )
-        if code != 0 or not stdout.strip():
-            return None
-
-        try:
-            results = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
-            return None
-
-        if not isinstance(results, list) or not results:
+        results = self._search_json(query)
+        if results is None:
+            results = self._search_table(query)
+        if not results:
             return None
 
         # Score every candidate against both the original and stripped name;
@@ -113,7 +101,6 @@ class WinGetManager(InstallablePackageManager):
             candidate_ver = (pkg.get("Version") or "").strip()
             if not candidate_id:
                 continue
-            # Score against both the stripped query and the original name
             score_name = max(fuzz.WRatio(query, candidate_name),
                              fuzz.WRatio(app_name, candidate_name))
             score_id   = max(fuzz.WRatio(query, candidate_id),
@@ -133,6 +120,39 @@ class WinGetManager(InstallablePackageManager):
         if best_score >= self._min_score and best_match is not None:
             return best_match
         return None
+
+    def _search_json(self, query: str) -> Optional[list[dict]]:
+        """Try ``winget search --output json``; return result list or None."""
+        stdout, _, code = self._runner(
+            [
+                "winget", "search",
+                "--query", query,
+                "--output", "json",
+                "--accept-source-agreements",
+            ]
+        )
+        if code != 0 or not stdout.strip():
+            return None
+        try:
+            data = json.loads(stdout)
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return None
+
+    def _search_table(self, query: str) -> list[dict]:
+        """Parse ``winget search`` tabular output into ``[{Name, Id, ...}]``."""
+        stdout, _, code = self._runner(
+            [
+                "winget", "search",
+                "--query", query,
+                "--accept-source-agreements",
+            ]
+        )
+        if code != 0 or not stdout.strip():
+            return []
+        return _parse_winget_table(stdout)
 
     def search_many(
         self,
