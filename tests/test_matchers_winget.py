@@ -218,7 +218,7 @@ class TestWinGetTabularFallback:
     def test_is_managed_works_via_tabular(self):
         mgr = WinGetManager(runner=self._tabular_runner())
         assert mgr.is_managed("draw.io 29.6.6") is True
-        assert mgr.is_managed("Git") is True
+        assert mgr.is_managed("Git") is True  # Git has Source=winget in this fixture
 
     def test_sourceless_app_not_managed(self):
         """SCMS has no Source — must be reported as NOT managed by winget."""
@@ -253,13 +253,15 @@ class TestWinGetIsAvailableCaching:
 
 
 class TestWinGetExtractOne:
-    """Issue #32: is_managed() should use rapidfuzz.process.extractOne."""
+    """Issue #32 / regression: is_managed() must NOT fuzzy-match — only exact,
+    version-stripped, and normalized lookups are permitted so that installed-by-
+    winget classification has no false positives."""
 
     def _pkgs(self, *names_ids):
         return [{"Name": n, "Id": i, "Source": "winget"} for n, i in names_ids]
 
-    def test_fuzzy_match_uses_extract_one(self):
-        """extractOne short-circuits — semantically identical to the loop."""
+    def test_exact_match_detected(self):
+        """Exact name match in name_map returns True."""
         packages = self._pkgs(
             ("GitHub Desktop", "GitHub.GitHubDesktop"),
             ("Visual Studio Code", "Microsoft.VisualStudioCode"),
@@ -271,14 +273,31 @@ class TestWinGetExtractOne:
         assert mgr.is_managed("Visual Studio Code") is True
         assert mgr.is_managed("CompletelyUnknownApp") is False
 
-    def test_extract_one_respects_min_score(self):
-        """Score cutoff is passed through to extractOne."""
+    def test_no_fuzzy_false_positives(self):
+        """is_managed() must NOT use fuzzy matching — low-similarity names must return False.
+
+        Previously, 'Realtek Audio' fuzzy-matched 'drawio' at WRatio=60 and
+        'AMD Software' matched 'nvidia physx system software' at 68.  With only
+        exact/stripped/normalized lookups these are correctly rejected.
+        """
+        packages = self._pkgs(
+            ("draw.io 29.6.6", "JGraph.Draw"),
+            ("NVIDIA PhysX System Software", "NVIDIA.PhysX"),
+        )
+        runner = _make_runner(json.dumps(packages))
+        mgr = WinGetManager(runner=runner)
+        # These must NOT match via fuzzy — they are not winget-managed
+        assert mgr.is_managed("Realtek Audio") is False
+        assert mgr.is_managed("AMD Software") is False
+        assert mgr.is_managed("Some Completely Different App") is False
+
+    def test_version_stripped_match(self):
+        """Name-map key stripped of version must still resolve to True."""
         packages = self._pkgs(("Git", "Git.Git"))
         runner = _make_runner(json.dumps(packages))
-        mgr = WinGetManager(runner=runner, min_score=99)
-        # "Git" exact match still works (O(1) dict lookup)
+        mgr = WinGetManager(runner=runner)
         assert mgr.is_managed("git") is True
-        # Fuzzy path: score("GitXYZ", "git") < 99
+        # A totally different name must remain False
         assert mgr.is_managed("GitXYZ") is False
 
 

@@ -51,26 +51,28 @@ class WinGetManager(InstallablePackageManager):
         return {normalize_name(n) for n in self._get_name_map()}
 
     def is_managed(self, display_name: str) -> bool:
-        """Return True if *display_name* matches a WinGet-managed package."""
+        """Return True if *display_name* matches a WinGet-managed package.
+
+        Only uses exact, version-stripped, and normalized matching against the
+        ``winget list`` output (which only includes apps *installed* by winget,
+        i.e. Source == "winget").  Fuzzy matching is intentionally excluded here
+        to prevent false positives — if winget installed an app, its name in
+        ``winget list`` should match the registry DisplayName closely enough for
+        these three lookups.  Fuzzy matching is reserved for :meth:`search`.
+        """
         name_map = self._get_name_map()
         name_lower = display_name.lower()
         if name_lower in name_map:
             return True
-        # Also try with version suffix stripped (e.g. "HWiNFO64 7.28" → "HWiNFO64")
+        # Version-stripped: "HWiNFO64 7.28-4900" → "hwinfo64"
         stripped_lower = strip_version_suffix(display_name).lower()
         if stripped_lower != name_lower and stripped_lower in name_map:
             return True
-        if not name_map:
-            return False
-        # Fuzzy fallback — query with version stripped for better accuracy
-        query = strip_version_suffix(display_name)
-        result = process.extractOne(
-            query,
-            name_map.keys(),
-            scorer=fuzz.WRatio,
-            score_cutoff=self._min_score,
-        )
-        return result is not None
+        # Normalized form: "draw.io" → "drawio"
+        norm = normalize_name(display_name)
+        if norm and norm != name_lower and norm != stripped_lower and norm in name_map:
+            return True
+        return False
 
     def search(self, app_name: str) -> Optional[PackageMatch]:
         """Search the WinGet repository for *app_name*.
