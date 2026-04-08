@@ -81,6 +81,7 @@ class TestOrchestratorDryRun:
 
 class TestOrchestratorPrerequisites:
     def test_returns_one_when_prereqs_fail(self):
+        """_check_prerequisites() now always returns True — this tests the fallback path."""
         cfg = ScanConfig()
         orch = Orchestrator(cfg)
         with patch.object(orch, "_check_prerequisites", return_value=False):
@@ -97,7 +98,26 @@ class TestOrchestratorPrerequisites:
             code = orch.run()
         assert code == 1
 
-    def test_returns_one_when_choco_unavailable(self):
+    def test_choco_unavailable_does_not_abort_scan(self):
+        """Chocolatey is optional — scan proceeds even when choco is not installed."""
+        cfg = ScanConfig()
+        winget = _mock_manager("winget")
+        choco = _mock_choco(available=False)
+        scoop = _mock_manager("scoop")
+
+        with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
+             patch.object(Orchestrator, "_check_install_privileges", return_value=False), \
+             patch("wincoman.runner.scan_installed_programs", return_value=[
+                 {"DisplayName": "TestApp", "DisplayVersion": "1.0", "Publisher": "X"}
+             ]):
+            orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
+            # Should NOT return 1 just because choco is unavailable
+            code = orch.run()
+        # 0 = all managed or no candidates (scan completed)
+        assert code == 0
+
+    def test_returns_one_when_choco_unavailable_old(self):
+        """Legacy: kept to verify no regression — choco unavailable + no installed = exit 1."""
         cfg = ScanConfig()
         winget = _mock_manager("winget")
         choco = _mock_choco(available=False)
@@ -112,17 +132,23 @@ class TestOrchestratorPrerequisites:
 
 
 class TestOrchestratorAdminCheck:
-    def test_non_admin_returns_false(self):
+    def test_non_admin_install_privileges_returns_false(self):
         orch = Orchestrator()
         with patch("ctypes.windll.shell32.IsUserAnAdmin", return_value=0):
-            result = orch._check_prerequisites()
+            result = orch._check_install_privileges()
         assert result is False
 
-    def test_admin_returns_true(self):
+    def test_admin_install_privileges_returns_true(self):
         orch = Orchestrator()
         with patch("ctypes.windll.shell32.IsUserAnAdmin", return_value=1):
-            result = orch._check_prerequisites()
+            result = orch._check_install_privileges()
         assert result is True
+
+    def test_prerequisites_always_true(self):
+        """Scanning never requires admin — _check_prerequisites() always returns True."""
+        orch = Orchestrator()
+        with patch("ctypes.windll.shell32.IsUserAnAdmin", return_value=0):
+            assert orch._check_prerequisites() is True
 
 
 class TestOrchestratorCache:

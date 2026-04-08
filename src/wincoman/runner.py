@@ -84,8 +84,7 @@ class Orchestrator:
                 logging.error("No installed programs found.")
                 return 1
             if not choco_ok:
-                logging.error("Chocolatey is not available.")
-                return 1
+                logging.info("Chocolatey not available — skipping Chocolatey classification.")
 
             # Step 4: Detect unmanaged apps
             logging.info("\nStep 4/5: Classifying Installed Apps")
@@ -182,6 +181,11 @@ class Orchestrator:
         if cfg.export_only:
             return 0 if export_to_batch(candidates, cfg.output_path) else 1
 
+        # Admin check: only required when actually installing (not for scanning/export)
+        if not self._check_install_privileges():
+            logging.info("Re-run as Administrator to install packages.")
+            return 0
+
         if cfg.auto:
             return 0 if register_packages(candidates, cfg, managers=mgr_map) else 1
 
@@ -192,16 +196,20 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _check_prerequisites(self) -> bool:
-        """Check admin privileges (required for choco install)."""
+        """Return True; prerequisites are now checked lazily (admin only at install time)."""
+        return True
+
+    def _check_install_privileges(self) -> bool:
+        """Return True if running as Administrator (required for choco install)."""
         import sys
 
         if sys.platform == "win32":
             import ctypes
 
             if not ctypes.windll.shell32.IsUserAnAdmin():
-                logging.error(
+                logging.warning(
                     "Not running as Administrator. "
-                    "choco install requires elevation."
+                    "choco install requires elevation — install step will be skipped."
                 )
                 return False
         return True
