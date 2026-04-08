@@ -9,6 +9,7 @@ substitute mock adapters for the entire pipeline.
 """
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
@@ -23,8 +24,93 @@ from wincoman.matchers.msstore import MicrosoftStoreManager
 from wincoman.matchers.psgallery import PSGalleryManager
 from wincoman.matchers.scoop import ScoopManager
 from wincoman.matchers.winget import WinGetManager
-from wincoman.registry import scan_installed_programs
+from wincoman.registry import _FILTER_ALL, _FILTER_NO_MICROSOFT, _REGISTRY_QUERY_BASE, _deduplicate, scan_installed_programs
 from wincoman.reporter import ScanSummary, display_results, display_summary, export_to_batch
+from wincoman.shell import run_command
+
+# Sentinel line that separates registry JSON from Microsoft Store output.
+_SECTION_SEPARATOR = "---MSSTORE_SECTION---"
+
+# Combined PowerShell script template: registry query + AppX query.
+_COMBINED_PS_TEMPLATE = r"""
+$UninstallKeys = @(
+    "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+    "HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+    "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+)
+Get-ItemProperty $UninstallKeys -ErrorAction SilentlyContinue |
+    Where-Object {{ {filter} }} |
+    Select-Object DisplayName, DisplayVersion, Publisher |
+    ConvertTo-Json -Compress
+
+Write-Output '{separator}'
+
+try {{
+    Get-AppxPackage -PackageTypeFilter Main -ErrorAction Stop |
+        Where-Object {{ $_.SignatureKind -eq 'Store' }} |
+        ForEach-Object {{ $_.Name + '|' + $_.Version }}
+}} catch {{
+    Write-Output 'APPX_UNAVAILABLE'
+}}
+"""
+
+
+def _run_combined_powershell(
+    config: ScanConfig,
+    msstore: MicrosoftStoreManager,
+    *,
+    runner=None,
+) -> list[dict]:
+    """Run registry scan + Microsoft Store query in **one** PowerShell process.
+
+    Parses the combined output, feeds the AppX section directly into the
+    :class:`MicrosoftStoreManager`'s internal cache so it does not need to
+    spawn a second ``powershell.exe``.
+
+    Returns the deduplicated registry program list.
+    """
+    if runner is None:
+        runner = run_command
+
+    where_filter = _FILTER_NO_MICROSOFT if config.exclude_microsoft else _FILTER_ALL
+    ps_script = _COMBINED_PS_TEMPLATE.format(
+        filter=where_filter,
+        separator=_SECTION_SEPARATOR,
+    )
+
+    stdout, stderr, code = runner(["powershell", "-NoProfile", "-Command", ps_script], timeout=60)
+
+    if code != 0:
+        logging.error(f"Combined PowerShell query failed (exit {code}): {stderr}")
+        return []
+
+    # Split on the sentinel line.
+    parts = stdout.split(_SECTION_SEPARATOR, 1)
+    registry_raw = parts[0].strip() if len(parts) > 0 else ""
+    msstore_raw = parts[1].strip() if len(parts) > 1 else ""
+
+    # --- Parse registry section ---
+    installed: list[dict] = []
+    if registry_raw:
+        try:
+            programs = json.loads(registry_raw)
+            if isinstance(programs, dict):
+                programs = [programs]
+            installed = _deduplicate(programs)
+        except json.JSONDecodeError as exc:
+            logging.error(f"Failed to parse installed programs: {exc}")
+
+    if not installed:
+        logging.error("No installed programs found — possible permission issue.")
+
+    # --- Feed AppX section into MicrosoftStoreManager ---
+    if msstore_raw and msstore_raw != "APPX_UNAVAILABLE":
+        msstore._populate_from_raw(msstore_raw)
+    elif msstore_raw == "APPX_UNAVAILABLE":
+        msstore._available = False
+        msstore._cache = {}
+
+    return installed
 
 
 class Orchestrator:
@@ -251,24 +337,25 @@ class Orchestrator:
             if self._psgallery.is_available():
                 self._psgallery.list_managed()
 
-        def _msstore_task() -> None:
-            if self._msstore.is_available():
-                self._msstore.list_managed()
+        def _powershell_combined_task() -> list[dict]:
+            """Run registry scan + Microsoft Store query in a single PowerShell process.
 
-        def _registry_task() -> list[dict]:
-            return scan_installed_programs(cfg)
+            This avoids spawning two separate powershell.exe processes, which
+            reduces UAC/privilege-management prompts from corporate security
+            tools (e.g. BeyondTrust) that intercept each powershell.exe launch.
+            """
+            return _run_combined_powershell(cfg, self._msstore)
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=5) as pool:
             f_winget = pool.submit(_winget_task)
             f_scoop = pool.submit(_scoop_task)
             f_choco = pool.submit(_choco_task)
             pool.submit(_psgallery_task)
-            pool.submit(_msstore_task)
-            f_registry = pool.submit(_registry_task)
+            f_combined = pool.submit(_powershell_combined_task)
 
             winget_ok = f_winget.result()
             scoop_ok = f_scoop.result()
             choco_ok = f_choco.result()
-            installed = f_registry.result()
+            installed = f_combined.result()
 
         return winget_ok, scoop_ok, choco_ok, installed

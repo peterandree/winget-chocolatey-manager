@@ -58,15 +58,15 @@ class MicrosoftStoreManager(BasePackageManager):
         return "msstore"
 
     def is_available(self) -> bool:
-        """Return True when PowerShell + Get-AppxPackage works."""
+        """Return True when PowerShell + Get-AppxPackage works.
+
+        Deferred to the first ``list_managed()`` / ``is_managed()`` call to
+        avoid an extra PowerShell process just for the availability check.
+        """
         if self._available is None:
-            _, _, code = self._runner(
-                ["powershell", "-NoProfile", "-Command",
-                 "Get-AppxPackage -PackageTypeFilter Main | Select-Object -First 1 Name"],
-                timeout=15,
-            )
-            self._available = code == 0
-        return self._available
+            # Force a name-map load — if it succeeds, we're available.
+            self._get_name_map()
+        return self._available or False
 
     def list_managed(self) -> set[str]:
         """Return normalised names of all Store-installed apps."""
@@ -112,13 +112,25 @@ class MicrosoftStoreManager(BasePackageManager):
             timeout=30,
         )
 
-        result: dict[str, str] = {}
         if code != 0:
             logging.info("Get-AppxPackage unavailable — skipping Microsoft Store detection.")
-            self._cache = result
-            return result
+            self._available = False
+            self._cache = {}
+            return self._cache
 
-        for line in stdout.splitlines():
+        self._available = True
+        self._populate_from_raw(stdout)
+        return self._cache  # type: ignore[return-value]
+
+    def _populate_from_raw(self, raw_output: str) -> None:
+        """Parse ``Name|Version`` lines and build the internal cache.
+
+        Called either from :meth:`_get_name_map` (own PS call) or from
+        :func:`_run_combined_powershell` in the orchestrator (shared PS call).
+        """
+        result: dict[str, str] = {}
+
+        for line in raw_output.splitlines():
             line = line.strip()
             if not line or "|" not in line:
                 continue
@@ -164,8 +176,8 @@ class MicrosoftStoreManager(BasePackageManager):
                 if alias_norm:
                     result.setdefault(alias_norm, raw_name)
 
+        self._available = True
         self._cache = result
         if result:
             unique = len({v for v in result.values()})
             logging.info(f"Found {unique} Microsoft Store apps")
-        return self._cache

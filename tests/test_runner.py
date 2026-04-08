@@ -56,7 +56,7 @@ class TestOrchestratorDryRun:
         scoop = _mock_manager("scoop")
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs",
+             patch("wincoman.runner._run_combined_powershell",
                    return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44", "Publisher": "X"}]), \
              patch("wincoman.runner.save_cache"):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
@@ -72,7 +72,7 @@ class TestOrchestratorDryRun:
         scoop = _mock_manager("scoop")
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs",
+             patch("wincoman.runner._run_combined_powershell",
                    return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44"}]):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
             code = orch.run()
@@ -94,7 +94,8 @@ class TestOrchestratorPrerequisites:
         choco = _mock_choco()
         scoop = _mock_manager("scoop")
         orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
-        with patch.object(orch, "_check_prerequisites", return_value=True):
+        with patch.object(orch, "_check_prerequisites", return_value=True), \
+             patch("wincoman.runner._run_combined_powershell", return_value=[]):
             code = orch.run()
         assert code == 1
 
@@ -107,7 +108,7 @@ class TestOrchestratorPrerequisites:
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
              patch.object(Orchestrator, "_check_install_privileges", return_value=False), \
-             patch("wincoman.runner.scan_installed_programs", return_value=[
+             patch("wincoman.runner._run_combined_powershell", return_value=[
                  {"DisplayName": "TestApp", "DisplayVersion": "1.0", "Publisher": "X"}
              ]):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
@@ -124,7 +125,7 @@ class TestOrchestratorPrerequisites:
         scoop = _mock_manager("scoop")
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs", return_value=[]):
+             patch("wincoman.runner._run_combined_powershell", return_value=[]):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
             code = orch.run()
         # Empty installed programs → returns 1
@@ -175,7 +176,7 @@ class TestOrchestratorParallelQueries:
         choco = _mock_choco()
 
         installed_programs = [{"DisplayName": "Git", "DisplayVersion": "2.44"}]
-        with patch("wincoman.runner.scan_installed_programs", return_value=installed_programs):
+        with patch("wincoman.runner._run_combined_powershell", return_value=installed_programs):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
             wg_ok, sc_ok, ch_ok, installed = orch._parallel_queries(cfg)
 
@@ -193,7 +194,7 @@ class TestOrchestratorParallelQueries:
         scoop = _mock_manager("scoop")
         choco = _mock_choco(available=False)
 
-        with patch("wincoman.runner.scan_installed_programs", return_value=[]):
+        with patch("wincoman.runner._run_combined_powershell", return_value=[]):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
             wg_ok, sc_ok, ch_ok, installed = orch._parallel_queries(cfg)
 
@@ -229,11 +230,11 @@ class TestOrchestratorParallelQueries:
         scoop.list_managed = track_scoop
         choco.list_managed = track_choco
 
-        def scan_reg(cfg):
+        def combined_ps(cfg, msstore, **kw):
             threads_seen.add(threading.current_thread().ident)
             return [{"DisplayName": "Git"}]
 
-        with patch("wincoman.runner.scan_installed_programs", side_effect=scan_reg):
+        with patch("wincoman.runner._run_combined_powershell", side_effect=combined_ps):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
             orch._parallel_queries(cfg)
 
@@ -252,7 +253,7 @@ class TestOrchestratorSummary:
         choco = _mock_choco(managed=True)
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs",
+             patch("wincoman.runner._run_combined_powershell",
                    return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44"}]):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
             with caplog.at_level(logging.INFO):
@@ -268,7 +269,7 @@ class TestOrchestratorSummary:
         scoop = _mock_manager("scoop")
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs",
+             patch("wincoman.runner._run_combined_powershell",
                    return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44"}]):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
             with caplog.at_level(logging.INFO):
@@ -283,7 +284,7 @@ class TestOrchestratorSummary:
         scoop = _mock_manager("scoop")
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs",
+             patch("wincoman.runner._run_combined_powershell",
                    return_value=[{"DisplayName": "Git", "DisplayVersion": "2.44", "Publisher": "X"}]), \
              patch("wincoman.runner.save_cache"):
             orch = Orchestrator(cfg, winget_mgr=winget, scoop_mgr=scoop, choco_mgr=choco)
@@ -317,7 +318,7 @@ class TestOrchestratorMultiManagerSearch:
         scoop = _mock_manager("scoop")
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs",
+             patch("wincoman.runner._run_combined_powershell",
                    return_value=[{"DisplayName": "Git", "DisplayVersion": "1.0"}]), \
              patch("wincoman.runner.save_cache"), \
              patch("wincoman.runner.register_interactive", return_value=True):
@@ -350,7 +351,7 @@ class TestOrchestratorMultiManagerSearch:
             captured_candidates.extend(c)
 
         with patch.object(Orchestrator, "_check_prerequisites", return_value=True), \
-             patch("wincoman.runner.scan_installed_programs",
+             patch("wincoman.runner._run_combined_powershell",
                    return_value=[{"DisplayName": "Git", "DisplayVersion": "1.0"}]), \
              patch("wincoman.runner.save_cache"), \
              patch("wincoman.runner.display_results", side_effect=mock_display), \
@@ -362,3 +363,92 @@ class TestOrchestratorMultiManagerSearch:
             hasattr(c, "primary") and c.primary.manager == "chocolatey"
             for c in captured_candidates
         )
+
+
+class TestCombinedPowerShell:
+    """Verify _run_combined_powershell parses registry + msstore in one call."""
+
+    def test_parses_registry_and_msstore_sections(self):
+        """Both registry JSON and msstore pipe-lines are parsed from one output."""
+        from wincoman.runner import _run_combined_powershell, _SECTION_SEPARATOR
+        from wincoman.matchers.msstore import MicrosoftStoreManager
+
+        registry_json = '[{"DisplayName":"Git","DisplayVersion":"2.44","Publisher":"X"}]'
+        msstore_lines = "Microsoft.WindowsCalculator|11.2\nNVIDIACorp.NVIDIAControlPanel|8.1"
+        combined_stdout = f"{registry_json}\n{_SECTION_SEPARATOR}\n{msstore_lines}"
+
+        def fake_runner(cmd, **kwargs):
+            return combined_stdout, "", 0
+
+        msstore = MicrosoftStoreManager(runner=fake_runner)
+        cfg = ScanConfig()
+        installed = _run_combined_powershell(cfg, msstore, runner=fake_runner)
+
+        assert len(installed) == 1
+        assert installed[0]["DisplayName"] == "Git"
+        # msstore should have been populated
+        assert msstore._available is True
+        assert msstore.is_managed("Windows Calculator") is True
+
+    def test_appx_unavailable_marker(self):
+        """APPX_UNAVAILABLE marker disables the store adapter gracefully."""
+        from wincoman.runner import _run_combined_powershell, _SECTION_SEPARATOR
+        from wincoman.matchers.msstore import MicrosoftStoreManager
+
+        registry_json = '[{"DisplayName":"Git","DisplayVersion":"2.44","Publisher":"X"}]'
+        combined_stdout = f"{registry_json}\n{_SECTION_SEPARATOR}\nAPPX_UNAVAILABLE"
+
+        def fake_runner(cmd, **kwargs):
+            return combined_stdout, "", 0
+
+        msstore = MicrosoftStoreManager(runner=fake_runner)
+        cfg = ScanConfig()
+        installed = _run_combined_powershell(cfg, msstore, runner=fake_runner)
+
+        assert len(installed) == 1
+        assert msstore._available is False
+
+    def test_ps_failure_returns_empty(self):
+        """When PowerShell fails entirely, returns empty list."""
+        from wincoman.runner import _run_combined_powershell
+        from wincoman.matchers.msstore import MicrosoftStoreManager
+
+        def fail_runner(cmd, **kwargs):
+            return "", "error", 1
+
+        msstore = MicrosoftStoreManager(runner=fail_runner)
+        cfg = ScanConfig()
+        installed = _run_combined_powershell(cfg, msstore, runner=fail_runner)
+        assert installed == []
+
+    def test_msstore_is_available_no_separate_ps_call(self):
+        """is_available() defers to _get_name_map() — no separate Select-Object call."""
+        from wincoman.matchers.msstore import MicrosoftStoreManager
+
+        commands_seen = []
+
+        def tracking_runner(cmd, **kwargs):
+            commands_seen.append(" ".join(cmd))
+            return "Microsoft.Calculator|1.0", "", 0
+
+        mgr = MicrosoftStoreManager(runner=tracking_runner)
+        assert mgr.is_available() is True
+        # Only one PS call, not two (old: first Select-Object, then full list)
+        assert len(commands_seen) == 1
+        assert "Select-Object -First 1" not in commands_seen[0]
+
+    def test_scoop_is_available_no_separate_version_call(self):
+        """is_available() defers to _raw_names() — no separate --version call."""
+        from wincoman.matchers.scoop import ScoopManager
+
+        commands_seen = []
+
+        def tracking_runner(cmd, **kwargs):
+            commands_seen.append(list(cmd))
+            return "git 2.44\n", "", 0
+
+        mgr = ScoopManager(runner=tracking_runner)
+        assert mgr.is_available() is True
+        # Only one call: 'scoop list', not 'scoop --version' + 'scoop list'
+        assert len(commands_seen) == 1
+        assert commands_seen[0] == ["scoop", "list"]

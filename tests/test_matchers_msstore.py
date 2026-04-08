@@ -19,12 +19,16 @@ APPX_OUTPUT = (
 
 
 def _make_runner(appx_stdout=APPX_OUTPUT, available=True):
-    """Return a runner that fakes Get-AppxPackage output."""
+    """Return a runner that fakes Get-AppxPackage output.
+
+    With ``available=False`` the full Get-AppxPackage query returns exit code 1,
+    making both ``is_available()`` and ``_get_name_map()`` treat the store as
+    unavailable.
+    """
     def runner(cmd, **kwargs):
-        if "Select-Object -First 1" in " ".join(cmd):
-            # is_available check
-            return ("Microsoft.DesktopAppInstaller" if available else "", "", 0 if available else 1)
-        # Full list
+        # Full list query (also used by is_available via _get_name_map)
+        if not available:
+            return "", "Get-AppxPackage not available", 1
         return appx_stdout, "", 0
     return runner
 
@@ -42,13 +46,12 @@ class TestMicrosoftStoreAvailability:
         call_count = 0
         def runner(cmd, **kwargs):
             nonlocal call_count
-            if "Select-Object -First 1" in " ".join(cmd):
-                call_count += 1
-                return "ok", "", 0
+            call_count += 1
             return APPX_OUTPUT, "", 0
         mgr = MicrosoftStoreManager(runner=runner)
         mgr.is_available()
         mgr.is_available()
+        # Only one PS call: the first is_available triggers _get_name_map, second is cached
         assert call_count == 1
 
 

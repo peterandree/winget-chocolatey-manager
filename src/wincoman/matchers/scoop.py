@@ -36,11 +36,15 @@ class ScoopManager(BasePackageManager):
         return "scoop"
 
     def is_available(self) -> bool:
-        """Return True when scoop is on PATH and responds."""
+        """Return True when scoop is on PATH and responds.
+
+        Deferred to the first ``_raw_names()`` call to avoid an extra
+        ``cmd.exe`` process just for the version check.
+        """
         if self._available is None:
-            _, _, code = self._runner(["scoop", "--version"], timeout=10)
-            self._available = code == 0
-        return self._available
+            # Trigger the list parse — sets _available as a side effect.
+            self._raw_names()
+        return self._available or False
 
     def list_managed(self) -> set[str]:
         """Return normalised names of all Scoop-installed packages."""
@@ -73,8 +77,11 @@ class ScoopManager(BasePackageManager):
         stdout, stderr, code = self._runner(["scoop", "list"], timeout=30)
         if code != 0:
             logging.info("Scoop not found or unavailable — skipping Scoop check.")
+            self._available = False
             self._cache = set()
             return self._cache
+
+        self._available = True
 
         # Scoop may emit ANSI colour codes in the header; strip them first.
         # Data lines (app names) are plain text.
