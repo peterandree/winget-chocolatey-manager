@@ -19,6 +19,7 @@ from wincoman.detector import find_unmanaged
 from wincoman.installer import register_interactive, register_packages
 from wincoman.matchers.base import AppCandidates, InstallablePackageManager, PackageMatch, rank_candidates
 from wincoman.matchers.chocolatey import ChocolateyManager
+from wincoman.matchers.psgallery import PSGalleryManager
 from wincoman.matchers.scoop import ScoopManager
 from wincoman.matchers.winget import WinGetManager
 from wincoman.registry import scan_installed_programs
@@ -35,11 +36,13 @@ class Orchestrator:
         winget_mgr: Optional[WinGetManager] = None,
         scoop_mgr: Optional[ScoopManager] = None,
         choco_mgr: Optional[ChocolateyManager] = None,
+        psgallery_mgr: Optional[PSGalleryManager] = None,
     ) -> None:
         self.config = config or ScanConfig()
         self._winget = winget_mgr or WinGetManager(min_score=self.config.min_score)
         self._scoop = scoop_mgr or ScoopManager()
         self._choco = choco_mgr or ChocolateyManager(config=self.config)
+        self._psgallery = psgallery_mgr or PSGalleryManager()
         # All managers that support install — ordered by MANAGER_PREFERENCE
         self._installable: list[InstallablePackageManager] = [self._winget, self._choco]
 
@@ -88,7 +91,7 @@ class Orchestrator:
 
             # Step 4: Detect unmanaged apps
             logging.info("\nStep 4/5: Classifying Installed Apps")
-            managers = [self._winget, self._choco, self._scoop]
+            managers = [self._winget, self._choco, self._scoop, self._psgallery]
 
             def _on_classify(app_name: str, manager_name: str | None) -> None:
                 summary.record_classification(app_name, manager_name)
@@ -217,7 +220,7 @@ class Orchestrator:
     def _parallel_queries(
         self, cfg: ScanConfig
     ) -> tuple[bool, bool, bool, list[dict]]:
-        """Run WinGet, Scoop, Chocolatey, and registry queries concurrently.
+        """Run WinGet, Scoop, Chocolatey, PSGallery, and registry queries concurrently.
 
         Returns:
             ``(winget_ok, scoop_ok, choco_ok, installed_programs)``
@@ -241,13 +244,18 @@ class Orchestrator:
             self._choco.list_managed()
             return True
 
+        def _psgallery_task() -> None:
+            if self._psgallery.is_available():
+                self._psgallery.list_managed()
+
         def _registry_task() -> list[dict]:
             return scan_installed_programs(cfg)
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=5) as pool:
             f_winget = pool.submit(_winget_task)
             f_scoop = pool.submit(_scoop_task)
             f_choco = pool.submit(_choco_task)
+            pool.submit(_psgallery_task)
             f_registry = pool.submit(_registry_task)
 
             winget_ok = f_winget.result()
