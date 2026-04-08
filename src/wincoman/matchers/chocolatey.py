@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 from wincoman.config import ScanConfig
 from wincoman.matchers.base import InstallablePackageManager, PackageMatch
-from wincoman.scoring import fuzzy_score, normalize_name, versions_differ
+from wincoman.scoring import fuzzy_score, normalize_name, strip_version_suffix, versions_differ
 from wincoman.shell import get_choco_major_version, run_command
 
 
@@ -56,13 +56,16 @@ class ChocolateyManager(InstallablePackageManager):
         """Search the Chocolatey repository for *app_name*.
 
         Tries an exact search first, then falls back to fuzzy scoring.
+        Version suffixes are stripped before querying so that display names
+        like ``"HWiNFO64 7.28-4900"`` resolve correctly.
         Returns ``None`` if no candidate meets the configured score threshold.
         """
         limit_flag = self._limit_output_flag()
+        query = strip_version_suffix(app_name)
 
-        # Exact search
+        # Exact search (using stripped query)
         stdout, _, code = self._runner(
-            ["choco", "search", app_name, "--exact"] + limit_flag
+            ["choco", "search", query, "--exact"] + limit_flag
         )
         if code == 0 and stdout.strip():
             parts = stdout.strip().split("\n")[0].split("|")
@@ -77,8 +80,8 @@ class ChocolateyManager(InstallablePackageManager):
                     manager=self.name,
                 )
 
-        # Fuzzy search
-        stdout, _, code = self._runner(["choco", "search", app_name] + limit_flag)
+        # Fuzzy search (using stripped query; score against both forms)
+        stdout, _, code = self._runner(["choco", "search", query] + limit_flag)
         if code == 0 and stdout.strip():
             best_id: Optional[str] = None
             best_ver: Optional[str] = None
@@ -87,7 +90,10 @@ class ChocolateyManager(InstallablePackageManager):
                 parts = line.split("|")
                 if len(parts) >= 2:
                     candidate_id = parts[0].strip()
-                    score = fuzzy_score(app_name, candidate_id)
+                    score = max(
+                        fuzzy_score(query, candidate_id),
+                        fuzzy_score(app_name, candidate_id),
+                    )
                     if score > best_score:
                         best_score = score
                         best_id = candidate_id

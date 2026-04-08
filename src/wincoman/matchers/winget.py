@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from rapidfuzz import fuzz, process
 
 from wincoman.matchers.base import InstallablePackageManager, PackageMatch
-from wincoman.scoring import normalize_name, versions_differ
+from wincoman.scoring import normalize_name, strip_version_suffix, versions_differ
 from wincoman.shell import run_command
 
 _DEFAULT_MIN_SCORE = 60
@@ -56,10 +56,16 @@ class WinGetManager(InstallablePackageManager):
         name_lower = display_name.lower()
         if name_lower in name_map:
             return True
+        # Also try with version suffix stripped (e.g. "HWiNFO64 7.28" → "HWiNFO64")
+        stripped_lower = strip_version_suffix(display_name).lower()
+        if stripped_lower != name_lower and stripped_lower in name_map:
+            return True
         if not name_map:
             return False
+        # Fuzzy fallback — query with version stripped for better accuracy
+        query = strip_version_suffix(display_name)
         result = process.extractOne(
-            display_name,
+            query,
             name_map.keys(),
             scorer=fuzz.WRatio,
             score_cutoff=self._min_score,
@@ -71,11 +77,15 @@ class WinGetManager(InstallablePackageManager):
 
         Runs ``winget search --query <name> --output json`` and returns the
         best fuzzy match above the configured threshold, or ``None``.
+
+        Version suffixes are stripped from *app_name* before querying so that
+        display names like ``"HWiNFO64 7.28-4900"`` resolve correctly.
         """
+        query = strip_version_suffix(app_name)
         stdout, _, code = self._runner(
             [
                 "winget", "search",
-                "--query", app_name,
+                "--query", query,
                 "--output", "json",
                 "--accept-source-agreements",
             ]
@@ -91,7 +101,8 @@ class WinGetManager(InstallablePackageManager):
         if not isinstance(results, list) or not results:
             return None
 
-        # Score every candidate; pick the best above threshold
+        # Score every candidate against both the original and stripped name;
+        # pick the best above threshold.
         best_match: Optional[PackageMatch] = None
         best_score = 0
         for pkg in results:
@@ -100,8 +111,11 @@ class WinGetManager(InstallablePackageManager):
             candidate_ver = (pkg.get("Version") or "").strip()
             if not candidate_id:
                 continue
-            score_name = fuzz.WRatio(app_name, candidate_name)
-            score_id = fuzz.WRatio(app_name, candidate_id)
+            # Score against both the stripped query and the original name
+            score_name = max(fuzz.WRatio(query, candidate_name),
+                             fuzz.WRatio(app_name, candidate_name))
+            score_id   = max(fuzz.WRatio(query, candidate_id),
+                             fuzz.WRatio(app_name, candidate_id))
             score = max(score_name, score_id)
             if score > best_score:
                 best_score = score

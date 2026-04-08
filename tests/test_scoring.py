@@ -1,5 +1,5 @@
 """Tests for src/wincoman/scoring.py (Issue #20)."""
-from wincoman.scoring import fuzzy_score, normalize_name, versions_differ
+from wincoman.scoring import fuzzy_score, normalize_name, strip_version_suffix, versions_differ
 
 
 class TestNormalizeName:
@@ -71,3 +71,36 @@ class TestVersionsDiffer:
 
     def test_both_empty_returns_false(self):
         assert versions_differ("", "") is False
+
+
+class TestStripVersionSuffix:
+    """Regression: display names with embedded versions must strip cleanly."""
+
+    def test_hwinfo_style(self):
+        assert strip_version_suffix("HWiNFO64 7.28-4900") == "HWiNFO64"
+
+    def test_git_style(self):
+        assert strip_version_suffix("Git 2.44.0") == "Git"
+
+    def test_no_version(self):
+        assert strip_version_suffix("Google Chrome") == "Google Chrome"
+
+    def test_v_prefix(self):
+        assert strip_version_suffix("SomeApp v3.2.1") == "SomeApp"
+
+    def test_version_with_parens(self):
+        assert strip_version_suffix("Python 3.12.4 (64-bit)") == "Python"
+
+    def test_empty_string_returns_empty(self):
+        assert strip_version_suffix("") == ""
+
+    def test_does_not_strip_mid_name_digits(self):
+        # "HWiNFO64" — the "64" is part of the name, not a trailing version
+        result = strip_version_suffix("HWiNFO64")
+        assert result == "HWiNFO64"
+
+    def test_preserves_name_when_only_version(self):
+        # Edge case: input is just a version — return as-is
+        result = strip_version_suffix("7.28")
+        assert isinstance(result, str)
+        assert result  # not empty

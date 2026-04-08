@@ -75,6 +75,16 @@ class TestWinGetManagerIsManaged:
         # "github desktop" vs "GitHub Desktop" should score above default 60
         assert mgr.is_managed("GitHub Desktop") is True
 
+    def test_version_in_display_name_still_matches(self):
+        """Regression: 'HWiNFO64 7.28-4900' must match 'HWiNFO64' in winget list."""
+        mgr = self._manager_with([{"Name": "HWiNFO64", "Id": "REALiX.HWiNFO"}])
+        assert mgr.is_managed("HWiNFO64 7.28-4900") is True
+
+    def test_version_suffix_stripped_for_fuzzy_path(self):
+        """App with version suffix like 'Git 2.44.0' matches 'Git' in winget list."""
+        mgr = self._manager_with([{"Name": "Git", "Id": "Git.Git"}])
+        assert mgr.is_managed("Git 2.44.0") is True
+
 
 class TestWinGetIsAvailableCaching:
     """Issue #34: is_available() should spawn subprocess at most once."""
@@ -179,6 +189,17 @@ class TestWinGetManagerSearch:
         result = mgr.search("GitHub Desktop")
         assert result is not None
         assert result.pkg_id == "GitHub.GitHubDesktop"
+
+    def test_search_strips_version_from_query(self):
+        """'HWiNFO64 7.28-4900' should find 'HWiNFO64' after stripping version."""
+        search_json = json.dumps([
+            {"Name": "HWiNFO64", "Id": "REALiX.HWiNFO", "Version": "7.30", "Source": "winget"},
+        ])
+        mgr = WinGetManager(runner=self._make_search_runner(search_json))
+        result = mgr.search("HWiNFO64 7.28-4900")
+        assert result is not None
+        assert result.pkg_id == "REALiX.HWiNFO"
+        assert result.app_name == "HWiNFO64 7.28-4900"  # original name preserved
 
 
 class TestWinGetManagerSearchMany:

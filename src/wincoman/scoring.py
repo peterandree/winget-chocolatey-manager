@@ -35,6 +35,36 @@ def normalize_name(name: str) -> str:
     return normalized
 
 
+def strip_version_suffix(name: str) -> str:
+    """Strip trailing version-like suffixes from a display name.
+
+    Useful for producing clean search queries from registry DisplayName values
+    that embed version numbers (e.g. ``"HWiNFO64 7.28-4900"`` → ``"HWiNFO64"``).
+
+    Only the trailing portion is removed; embedded version-like tokens are kept.
+
+    Examples::
+
+        >>> strip_version_suffix("HWiNFO64 7.28-4900")
+        'HWiNFO64'
+        >>> strip_version_suffix("Git 2.44.0")
+        'Git'
+        >>> strip_version_suffix("Google Chrome")
+        'Google Chrome'
+        >>> strip_version_suffix("Python 3.12.4 (64-bit)")
+        'Python'
+    """
+    # Remove trailing version pattern: optional "v" + digit(s) + dots/dashes/underscores
+    # Also strip anything after (e.g. "(64-bit)", "(x64)" that follows)
+    stripped = re.sub(
+        r"\s+v?\d[\d.\-_]*(\s*\(.*\))?\s*$",
+        "",
+        name.strip(),
+        flags=re.IGNORECASE,
+    )
+    return stripped.strip() or name
+
+
 def fuzzy_score(a: str, b: str) -> int:
     """Return a 0-100 similarity score between *a* and *b*.
 
