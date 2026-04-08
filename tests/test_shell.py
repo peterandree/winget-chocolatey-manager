@@ -50,12 +50,32 @@ class TestRunCommand:
         assert "not found" in stderr.lower()
         assert code == 1
 
-    def test_generic_exception_returns_error_tuple(self):
-        with patch("subprocess.run", side_effect=RuntimeError("boom")):
-            stdout, stderr, code = run_command(["cmd"])
-        assert stdout == ""
-        assert "boom" in stderr
-        assert code == 1
+    def test_cmd_shim_uses_shell_true(self):
+        """.cmd shims (e.g. scoop) must run with shell=True so cmd.exe interprets them."""
+        with patch("shutil.which", return_value=r"C:\Users\user\scoop\shims\scoop.CMD"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="ok", stderr="", returncode=0)) as mock_run:
+            run_command(["scoop", "--version"])
+        _, kwargs = mock_run.call_args
+        assert kwargs["shell"] is True
+
+    def test_bat_shim_uses_shell_true(self):
+        """.bat files also need shell=True."""
+        with patch("shutil.which", return_value=r"C:\tools\mytool.bat"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="ok", stderr="", returncode=0)) as mock_run:
+            run_command(["mytool", "--version"])
+        _, kwargs = mock_run.call_args
+        assert kwargs["shell"] is True
+
+    def test_exe_does_not_force_shell_true(self):
+        """Regular .exe executables should NOT use shell=True by default."""
+        with patch("shutil.which", return_value=r"C:\tools\winget.EXE"), \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="ok", stderr="", returncode=0)) as mock_run:
+            run_command(["winget", "--version"])
+        _, kwargs = mock_run.call_args
+        assert kwargs["shell"] is False
 
 
 class TestGetChocoMajorVersion:

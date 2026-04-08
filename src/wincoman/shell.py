@@ -6,6 +6,7 @@ and ``get_choco_major_version`` for Chocolatey version detection.
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from typing import Callable, Optional
 
@@ -23,11 +24,25 @@ def run_command(
 ) -> tuple[str, str, int]:
     """Run *cmd* and return ``(stdout, stderr, returncode)``.
 
+    On Windows, ``.cmd`` and ``.bat`` shims (e.g. the Scoop shim at
+    ``scoop.CMD``) cannot be executed by ``CreateProcess`` directly — they
+    require the Windows shell (``cmd.exe``).  This function detects such files
+    via :func:`shutil.which` and automatically sets ``shell=True`` so callers
+    do not need to know about the underlying file type.
+
     Never raises — all subprocess errors are converted to a non-zero return
     code with the error message in *stderr*.
     """
     if timeout is None:
         timeout = DEFAULT_TIMEOUT
+
+    # Resolve .cmd/.bat shims that need shell=True on Windows
+    use_shell = shell
+    if not use_shell and isinstance(cmd, list) and cmd:
+        resolved = shutil.which(cmd[0])
+        if resolved and resolved.lower().endswith((".cmd", ".bat")):
+            use_shell = True
+
     try:
         result = subprocess.run(
             cmd,
@@ -35,7 +50,7 @@ def run_command(
             text=True,
             encoding="utf-8",
             errors="ignore",
-            shell=shell,
+            shell=use_shell,
             timeout=timeout,
         )
         return result.stdout, result.stderr, result.returncode

@@ -7,11 +7,19 @@ gracefully when Scoop is not on PATH.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable, Optional
 
 from wincoman.matchers.base import BasePackageManager
 from wincoman.scoring import normalize_name
 from wincoman.shell import run_command
+
+# Matches ANSI escape sequences (colours, bold, reset, etc.)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 class ScoopManager(BasePackageManager):
@@ -68,13 +76,20 @@ class ScoopManager(BasePackageManager):
             self._cache = set()
             return self._cache
 
+        # Scoop may emit ANSI colour codes in the header; strip them first.
+        # Data lines (app names) are plain text.
+        _SKIP = {"name", "----", "installed", "apps:"}
         names: set[str] = set()
-        for line in stdout.split("\n"):
+        for raw_line in stdout.split("\n"):
+            line = _strip_ansi(raw_line).strip()
             parts = line.split()
-            if parts:
-                name = parts[0].strip().lower()
-                if name and name not in ("name", "----"):
-                    names.add(name)
+            if not parts:
+                continue
+            name = parts[0].lower()
+            # Skip header, separator, and section-title tokens
+            if name in _SKIP or name.startswith("-"):
+                continue
+            names.add(name)
 
         self._cache = names
         if names:
