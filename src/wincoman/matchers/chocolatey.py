@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from wincoman.config import ScanConfig
 from wincoman.matchers.base import InstallablePackageManager, PackageMatch
 from wincoman.scoring import fuzzy_score, normalize_name, strip_version_suffix, versions_differ
-from wincoman.shell import get_choco_major_version, run_command
+from wincoman.shell import run_command
 
 
 class ChocolateyManager(InstallablePackageManager):
@@ -30,7 +30,6 @@ class ChocolateyManager(InstallablePackageManager):
         self._runner = runner or run_command
         self._sleep = sleep or time.sleep
         self._cache: Optional[set[str]] = None
-        self._choco_ver: Optional[int] = None
         self._available: Optional[bool] = None
 
     @property
@@ -177,9 +176,11 @@ class ChocolateyManager(InstallablePackageManager):
         if self._cache is not None:
             return self._cache
 
-        choco_major = self._choco_major_version()
-        cmd = ["choco", "list"] if choco_major >= 2 else ["choco", "list", "--limit-output"]
-        stdout, stderr, code = self._runner(cmd)
+        # --limit-output produces consistent "name|version" output in both
+        # choco v1 and v2 (deprecated in v2 but still supported).  The default
+        # v2 output is human-readable space-separated text which is harder to
+        # parse reliably, so we always request machine-readable pipe format.
+        stdout, stderr, code = self._runner(["choco", "list", "--limit-output"])
 
         if code != 0:
             logging.warning(f"choco list failed: {stderr}")
@@ -200,9 +201,5 @@ class ChocolateyManager(InstallablePackageManager):
         return self._cache
 
     def _limit_output_flag(self) -> list[str]:
-        return [] if self._choco_major_version() >= 2 else ["--limit-output"]
-
-    def _choco_major_version(self) -> int:
-        if self._choco_ver is None:
-            self._choco_ver = get_choco_major_version(runner=self._runner)
-        return self._choco_ver
+        # Always use --limit-output for consistent pipe-separated output
+        return ["--limit-output"]

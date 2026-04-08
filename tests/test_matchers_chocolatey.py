@@ -68,9 +68,10 @@ class TestChocolateyManagerListManaged:
         _, calls = self._manager(CHOCO_LIST_V1, choco_major=1)
         assert any("--limit-output" in c for c in calls)
 
-    def test_v2_omits_limit_output(self):
+    def test_v2_also_uses_limit_output(self):
+        """choco v2 still supports --limit-output and it gives consistent pipe output."""
         _, calls = self._manager(CHOCO_LIST_V1, choco_major=2)
-        assert not any("--limit-output" in c for c in calls)
+        assert any("--limit-output" in c for c in calls)
 
 
 class TestChocolateyManagerSearch:
@@ -301,10 +302,15 @@ class TestChocolateyManagerInstall:
 
 
 class TestChocoMajorVersionCaching:
-    """Issue #31: _choco_major_version() must be called at most once per instance."""
+    """Issue #31 / regression: version detection must not run on every operation.
 
-    def test_choco_version_called_once_across_multiple_searches(self):
-        """Even after N search() calls, get_choco_major_version is invoked only once."""
+    Since _choco_major_version() was removed (we always use --limit-output),
+    'choco --version' must NOT be called during search() or list_managed().
+    It is only called by is_available().
+    """
+
+    def test_choco_version_not_called_during_search(self):
+        """search() must never call 'choco --version' — no version detection needed."""
         call_count = 0
 
         def counting_runner(cmd, **kwargs):
@@ -318,10 +324,10 @@ class TestChocoMajorVersionCaching:
         mgr.search("git")
         mgr.search("nodejs")
         mgr.search("python")
-        assert call_count == 1, f"Expected 1 choco --version call, got {call_count}"
+        assert call_count == 0, f"Expected 0 'choco --version' calls during search, got {call_count}"
 
-    def test_choco_version_cached_across_list_and_search(self):
-        """Version is cached across list_managed() and search() calls."""
+    def test_choco_version_not_called_during_list(self):
+        """list_managed() must not call 'choco --version'."""
         call_count = 0
 
         def counting_runner(cmd, **kwargs):
@@ -336,4 +342,4 @@ class TestChocoMajorVersionCaching:
         mgr = ChocolateyManager(runner=counting_runner, sleep=lambda _: None)
         mgr.list_managed()
         mgr.search("git")
-        assert call_count == 1
+        assert call_count == 0, f"Expected 0 'choco --version' calls, got {call_count}"
