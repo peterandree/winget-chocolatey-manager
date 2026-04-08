@@ -99,12 +99,27 @@ class InstallablePackageManager(SearchablePackageManager, ABC):
     def install(self, match: PackageMatch, *, dry_run: bool = False) -> bool:
         """Install the package identified by *match*.
 
+        Installing via the package manager is also the adoption mechanism: after
+        a successful install the manager writes its own tracking metadata (e.g.
+        ``Source: winget`` in ``winget list``, or a Chocolatey lib entry), so
+        subsequent scans will classify the app as managed by this manager.
+
         Args:
             match: The resolved package to install.
             dry_run: When *True*, log what would be done but do not execute.
 
         Returns:
             ``True`` on success (or dry-run), ``False`` on failure.
+        **Never raises.**
+        """
+
+    @abstractmethod
+    def refresh_cache(self) -> None:
+        """Invalidate internal caches so the next ``is_managed()`` call re-queries
+        the manager's live package list.
+
+        Must be called after a successful :meth:`install` so that the app is
+        immediately visible as managed without requiring a full re-scan.
         **Never raises.**
         """
 

@@ -190,6 +190,12 @@ class ChocolateyManager(InstallablePackageManager):
     def install(self, match: PackageMatch, *, dry_run: bool = False) -> bool:
         """Install *match* via ``choco install``.
 
+        Running ``choco install`` also adopts the app: Chocolatey writes its own
+        tracking metadata under ``%ChocolateyInstall%\\lib\\``, so subsequent
+        ``choco list`` output includes the package.  Call :meth:`refresh_cache`
+        after this returns ``True`` to make the change visible to ``is_managed()``
+        immediately.
+
         Returns ``True`` on success or dry-run, ``False`` on failure.
         """
         cmd = ["choco", "install", match.pkg_id, "-y", "--force"]
@@ -201,6 +207,15 @@ class ChocolateyManager(InstallablePackageManager):
             logging.error(f"    choco install failed: {stderr[:200]}")
             return False
         return True
+
+    def refresh_cache(self) -> None:
+        """Invalidate the Chocolatey package list cache.
+
+        The next call to :meth:`is_managed` or :meth:`list_managed` will
+        re-query ``choco list`` and pick up packages registered by a recent
+        :meth:`install` call.
+        """
+        self._cache = None
 
     # ------------------------------------------------------------------
     # Internal helpers

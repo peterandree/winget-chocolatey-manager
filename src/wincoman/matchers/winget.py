@@ -197,6 +197,11 @@ class WinGetManager(InstallablePackageManager):
     def install(self, match: PackageMatch, *, dry_run: bool = False) -> bool:
         """Install *match* via ``winget install``.
 
+        Running ``winget install`` also adopts the app: afterwards ``winget list``
+        records it with ``Source: winget``, so subsequent scans classify it as
+        winget-managed.  Call :meth:`refresh_cache` after this returns ``True``
+        to make the change visible to ``is_managed()`` immediately.
+
         Returns ``True`` on success or dry-run, ``False`` on failure.
         """
         cmd = [
@@ -215,6 +220,15 @@ class WinGetManager(InstallablePackageManager):
             logging.error(f"    winget install failed: {stderr[:200]}")
             return False
         return True
+
+    def refresh_cache(self) -> None:
+        """Invalidate the winget package list cache.
+
+        The next call to :meth:`is_managed` or :meth:`list_managed` will
+        re-query ``winget list`` and pick up packages registered by a recent
+        :meth:`install` call.
+        """
+        self._cache = None
 
     # ------------------------------------------------------------------
     # Internal helpers

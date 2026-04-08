@@ -413,6 +413,53 @@ class TestWinGetSearchTabularFallback:
         assert result is None
 
 
+class TestWinGetRefreshCache:
+    """refresh_cache() clears the internal cache so next lookup re-queries winget list."""
+
+    def test_refresh_cache_clears_name_map(self):
+        """After refresh_cache(), _cache is None so _get_name_map will re-query."""
+        call_count = [0]
+
+        def runner(cmd, **kwargs):
+            if "--version" in cmd:
+                return "v1.6", "", 0
+            call_count[0] += 1
+            # First call returns Git, second call returns empty
+            if call_count[0] == 1:
+                return '[{"Name":"Git","Id":"Git.Git","Version":"2.44","Source":"winget"}]', "", 0
+            return "[]", "", 0
+
+        mgr = WinGetManager(runner=runner)
+        assert mgr.is_managed("Git") is True  # populates cache
+
+        mgr.refresh_cache()
+        assert mgr._cache is None  # cache cleared
+
+        assert mgr.is_managed("Git") is False  # re-queries; second call returns []
+
+    def test_refresh_cache_second_is_managed_reflects_new_state(self):
+        """is_managed() returns updated result after refresh_cache()."""
+        packages_json = [
+            '{"Name":"Git","Id":"Git.Git","Version":"2.44","Source":"winget"}'
+        ]
+        call_count = [0]
+
+        def runner(cmd, **kwargs):
+            if "--version" in cmd:
+                return "v1.6", "", 0
+            call_count[0] += 1
+            entries = packages_json.copy()
+            return "[" + ",".join(entries) + "]", "", 0
+
+        mgr = WinGetManager(runner=runner)
+        mgr.is_managed("Git")   # prime cache
+
+        packages_json.append('{"Name":"VLC","Id":"VideoLAN.VLC","Version":"3.0","Source":"winget"}')
+        mgr.refresh_cache()
+
+        assert mgr.is_managed("VLC") is True
+
+
 class TestWinGetManagerSearchMany:
     def _manager(self, search_json="[]"):
         def runner(cmd, **kwargs):

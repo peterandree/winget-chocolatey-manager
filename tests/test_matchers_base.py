@@ -289,9 +289,34 @@ class TestInstallablePackageManagerABC:
                 return []
             def install(self, match, *, dry_run=False):
                 return True
+            def refresh_cache(self):
+                pass
 
         obj = Complete()
         assert obj.name == "test"
+
+    def test_missing_refresh_cache_raises(self):
+        """InstallablePackageManager without refresh_cache cannot be instantiated."""
+        class NoRefreshCache(InstallablePackageManager):
+            @property
+            def name(self):
+                return "test"
+            def is_available(self):
+                return True
+            def list_managed(self):
+                return set()
+            def is_managed(self, display_name):
+                return False
+            def search(self, app_name):
+                return None
+            def search_many(self, apps, *, progress_cb=None, on_result=None):
+                return []
+            def install(self, match, *, dry_run=False):
+                return True
+            # refresh_cache intentionally missing
+
+        with pytest.raises(TypeError):
+            NoRefreshCache()  # type: ignore[abstract]
 
 
 # ---------------------------------------------------------------------------

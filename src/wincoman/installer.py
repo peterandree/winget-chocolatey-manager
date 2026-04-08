@@ -92,6 +92,16 @@ def register_packages(
         ok = False
         if mgr is not None:
             ok = mgr.install(match, dry_run=False)
+            if ok:
+                # Refresh the manager's cache so is_managed() reflects the
+                # newly-adopted package without requiring a full re-scan.
+                mgr.refresh_cache()
+                if not mgr.is_managed(app_name):
+                    logging.warning(
+                        f"    Installed {pkg_id} via {manager_name} but "
+                        f"{manager_name} does not yet track '{app_name}'. "
+                        f"A manual update cycle (e.g. 'winget upgrade') may be needed."
+                    )
         else:
             # Fallback: run choco install (legacy / no manager map)
             cmd = ["choco", "install", pkg_id, "-y", "--force"]

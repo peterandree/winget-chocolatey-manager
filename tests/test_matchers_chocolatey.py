@@ -343,3 +343,45 @@ class TestChocoMajorVersionCaching:
         mgr.list_managed()
         mgr.search("git")
         assert call_count == 0, f"Expected 0 'choco --version' calls, got {call_count}"
+
+
+class TestChocolateyRefreshCache:
+    """refresh_cache() clears the internal cache so next lookup re-queries choco list."""
+
+    def test_refresh_cache_clears_cache(self):
+        """After refresh_cache(), _cache is None so _get_package_set will re-query."""
+        call_count = [0]
+
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.3.0", "", 0
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "git|2.44.0\n", "", 0
+            return "", "", 0  # second call: empty list
+
+        mgr = ChocolateyManager(runner=runner)
+        assert mgr.is_managed("git") is True  # populates cache
+
+        mgr.refresh_cache()
+        assert mgr._cache is None  # cache cleared
+
+        assert mgr.is_managed("git") is False  # re-queries; now empty
+
+    def test_refresh_cache_reflects_new_packages(self):
+        """is_managed() returns True for newly-installed package after refresh."""
+        packages = ["git|2.44.0"]
+
+        def runner(cmd, **kwargs):
+            if cmd == ["choco", "--version"]:
+                return "2.3.0", "", 0
+            return "\n".join(packages) + "\n", "", 0
+
+        mgr = ChocolateyManager(runner=runner)
+        mgr.is_managed("git")  # prime cache
+
+        packages.append("vlc|3.0.0")
+        mgr.refresh_cache()
+
+        assert mgr.is_managed("vlc") is True
+

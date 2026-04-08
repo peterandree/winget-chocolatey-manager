@@ -180,6 +180,51 @@ class TestRegisterPackagesManagerDispatch:
         assert result is True
         assert choco_mgr.install.call_args[0][0].app_name == "VLC"
 
+    def test_refresh_cache_called_after_successful_install(self):
+        """After a successful install, refresh_cache() is called on the manager."""
+        winget_mgr = MagicMock()
+        winget_mgr.install.return_value = True
+        winget_mgr.is_managed.return_value = True
+        managers = {"winget": winget_mgr}
+
+        register_packages([_candidate("Git", "Git.Git", "winget")], managers=managers)
+
+        winget_mgr.refresh_cache.assert_called_once()
+
+    def test_refresh_cache_not_called_on_failed_install(self):
+        """When install() fails, refresh_cache() must NOT be called."""
+        winget_mgr = MagicMock()
+        winget_mgr.install.return_value = False
+        managers = {"winget": winget_mgr}
+
+        register_packages([_candidate("Git", "Git.Git", "winget")], managers=managers)
+
+        winget_mgr.refresh_cache.assert_not_called()
+
+    def test_warning_logged_when_still_unmanaged_after_install(self, caplog):
+        """Warning is logged when install succeeds but manager still does not track the app."""
+        winget_mgr = MagicMock()
+        winget_mgr.install.return_value = True
+        winget_mgr.is_managed.return_value = False  # adoption didn't take
+        managers = {"winget": winget_mgr}
+
+        with caplog.at_level(logging.WARNING):
+            register_packages([_candidate("Git", "Git.Git", "winget")], managers=managers)
+
+        assert "does not yet track" in caplog.text
+
+    def test_no_warning_when_adoption_confirmed(self, caplog):
+        """No warning when is_managed() returns True after install."""
+        winget_mgr = MagicMock()
+        winget_mgr.install.return_value = True
+        winget_mgr.is_managed.return_value = True
+        managers = {"winget": winget_mgr}
+
+        with caplog.at_level(logging.WARNING):
+            register_packages([_candidate("Git", "Git.Git", "winget")], managers=managers)
+
+        assert "does not yet track" not in caplog.text
+
 
 class TestRegisterInteractive:
     def test_choice_4_exits_without_registering(self):
