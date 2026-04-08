@@ -199,29 +199,119 @@ class WinGetManager(InstallablePackageManager):
     # ------------------------------------------------------------------
 
     def _get_name_map(self) -> dict[str, str]:
-        """Return a cached ``{name_lower: id}`` map from winget list."""
+        """Return a cached ``{name_lower: id}`` map from winget list.
+
+        Tries ``winget list --output json`` first (winget ≥ 1.5+).
+        If that fails (older winget or missing flag), falls back to parsing
+        the plain tabular output of ``winget list``.
+
+        Both the original name AND the version-stripped name are indexed so
+        that ``is_managed()`` can look up entries regardless of whether the
+        name_map or the registry DisplayName carries the version.
+        """
         if self._cache is not None:
             return self._cache
 
-        stdout, stderr, code = self._runner(
-            ["winget", "list", "--output", "json", "--accept-source-agreements"]
-        )
-        if code != 0:
-            logging.warning(f"winget list failed: {stderr}")
-            self._cache = {}
-            return self._cache
-
-        try:
-            packages = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
-            logging.warning("winget list returned invalid JSON")
-            self._cache = {}
-            return self._cache
+        packages = self._fetch_packages_json()
+        if packages is None:
+            packages = self._fetch_packages_table()
 
         result: dict[str, str] = {}
         for pkg in packages:
             name = (pkg.get("Name") or "").strip()
-            if name:
-                result[name.lower()] = pkg.get("Id", "")
+            pkg_id = pkg.get("Id", "")
+            if not name:
+                continue
+            name_lower = name.lower()
+            result[name_lower] = pkg_id
+            # Also index by version-stripped name so we match entries like
+            # "7-Zip 26.00 (x64)" → "7-zip" without needing exact version.
+            stripped = strip_version_suffix(name).lower()
+            if stripped and stripped != name_lower:
+                result.setdefault(stripped, pkg_id)
+            # Normalized form (no special chars) for apps like "draw.io" → "drawio"
+            norm = normalize_name(name)
+            if norm and norm != name_lower:
+                result.setdefault(norm, pkg_id)
+
         self._cache = result
         return self._cache
+
+    def _fetch_packages_json(self) -> Optional[list[dict]]:
+        """Try ``winget list --output json``; return package list or None."""
+        stdout, _, code = self._runner(
+            ["winget", "list", "--output", "json", "--accept-source-agreements"]
+        )
+        if code != 0 or not stdout.strip():
+            return None
+        try:
+            data = json.loads(stdout)
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return None
+
+    def _fetch_packages_table(self) -> list[dict]:
+        """Parse ``winget list`` tabular output into a list of dicts.
+
+        Handles the plain text table that older winget versions produce when
+        ``--output json`` is not recognised.  Column boundaries are inferred
+        from the header line (the line containing 'Name' and 'Id').
+        """
+        stdout, stderr, code = self._runner(
+            ["winget", "list", "--accept-source-agreements"]
+        )
+        if code != 0 or not stdout.strip():
+            logging.warning(f"winget list failed: {stderr}")
+            return []
+        return _parse_winget_table(stdout)
+
+
+def _parse_winget_table(text: str) -> list[dict]:
+    """Parse winget plain-text tabular output into ``[{Name, Id}, ...]``.
+
+    Finds the header row by locating the line that contains both ``Name``
+    and ``Id``, then uses character positions to slice each data row.
+
+    Robust against:
+    * Leading spinner/progress lines (``- ``)
+    * A single long separator line (``---...``)
+    * Names that include version numbers (e.g. ``draw.io 29.6.6``)
+    """
+    lines = text.splitlines()
+
+    # Locate the header line
+    header_idx: Optional[int] = None
+    for i, line in enumerate(lines):
+        if "Name" in line and "Id" in line:
+            header_idx = i
+            break
+    if header_idx is None:
+        return []
+
+    header = lines[header_idx]
+    name_col = header.index("Name")
+    id_col = header.index("Id")
+    # Version column optional
+    ver_col: Optional[int] = header.find("Version")
+    if ver_col == -1:
+        ver_col = None
+
+    packages: list[dict] = []
+    for line in lines[header_idx + 1 :]:
+        stripped = line.strip()
+        # Skip blank lines and the separator (all dashes / spaces)
+        if not stripped or all(c in "- " for c in stripped):
+            continue
+        if len(line) <= name_col:
+            continue
+
+        name = line[name_col:id_col].strip() if len(line) > id_col else line[name_col:].strip()
+        id_part = line[id_col:ver_col].strip() if ver_col and len(line) > id_col else (
+            line[id_col:].split()[0] if len(line) > id_col else ""
+        )
+        if name:
+            packages.append({"Name": name, "Id": id_part})
+
+    return packages

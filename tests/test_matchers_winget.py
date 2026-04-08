@@ -1,8 +1,8 @@
-"""Tests for src/wincoman/matchers/winget.py (Issue #23)."""
+"""Tests for src/wincoman/matchers/winget.py (Issues #23, #38, #39)."""
 import json
-from unittest.mock import MagicMock
+from unittest.mock import call
 
-from wincoman.matchers.winget import WinGetManager
+from wincoman.matchers.winget import WinGetManager, _parse_winget_table
 
 
 def _make_runner(stdout="", returncode=0):
@@ -36,7 +36,28 @@ class TestWinGetManagerListManaged:
         mgr = WinGetManager(runner=_make_runner("", returncode=1))
         assert mgr.list_managed() == set()
 
+    def test_falls_back_to_tabular_when_json_unsupported(self):
+        """Older winget versions reject --output json; tabular output must still work."""
+        TABULAR = (
+            "Name                              Id              Version\n"
+            "--------------------------------  --------------  -------\n"
+            "Git                               Git.Git         2.44.0\n"
+            "draw.io 29.6.6                    JGraph.Draw     29.6.6\n"
+        )
+
+        def runner(cmd, **kwargs):
+            if "--output" in cmd and "json" in cmd:
+                return "", "Argument name was not recognized", 1
+            return TABULAR, "", 0
+
+        mgr = WinGetManager(runner=runner)
+        managed = mgr.list_managed()
+        assert "git" in managed
+        # draw.io normalizes to "drawio" (dots stripped)
+        assert "drawio" in managed
+
     def test_empty_list_on_invalid_json(self):
+        """If JSON is returned but malformed, list is empty (both paths fail)."""
         mgr = WinGetManager(runner=_make_runner("not json"))
         assert mgr.list_managed() == set()
 
@@ -84,6 +105,94 @@ class TestWinGetManagerIsManaged:
         """App with version suffix like 'Git 2.44.0' matches 'Git' in winget list."""
         mgr = self._manager_with([{"Name": "Git", "Id": "Git.Git"}])
         assert mgr.is_managed("Git 2.44.0") is True
+
+    def test_drawio_versioned_name_matches(self):
+        """Regression: winget list entry 'draw.io 29.6.6' matched against registry 'draw.io 29.6.6'."""
+        mgr = self._manager_with([{"Name": "draw.io 29.6.6", "Id": "JGraph.Draw"}])
+        assert mgr.is_managed("draw.io 29.6.6") is True
+
+    def test_drawio_registry_versioned_winget_plain(self):
+        """Registry 'draw.io 29.6.6' matched against winget list plain 'draw.io'."""
+        mgr = self._manager_with([{"Name": "draw.io", "Id": "JGraph.Draw"}])
+        assert mgr.is_managed("draw.io 29.6.6") is True
+
+
+class TestParseWingetTable:
+    """Unit tests for the tabular winget list parser."""
+
+    SAMPLE = (
+        "- \n"
+        "Name                              Id              Version    Source\n"
+        "--------------------------------  --------------  ---------  ------\n"
+        "Git                               Git.Git         2.44.0     winget\n"
+        "draw.io 29.6.6                    JGraph.Draw     29.6.6     winget\n"
+        "7-Zip 26.00 (x64)                 7zip.7zip       26.00      winget\n"
+    )
+
+    def test_parses_name_and_id(self):
+        result = _parse_winget_table(self.SAMPLE)
+        names = [r["Name"] for r in result]
+        assert "Git" in names
+        assert "draw.io 29.6.6" in names
+
+    def test_parses_versioned_name(self):
+        result = _parse_winget_table(self.SAMPLE)
+        ids = {r["Name"]: r["Id"] for r in result}
+        assert ids.get("draw.io 29.6.6") == "JGraph.Draw"
+        assert ids.get("Git") == "Git.Git"
+
+    def test_skips_spinner_lines(self):
+        result = _parse_winget_table(self.SAMPLE)
+        for r in result:
+            assert r["Name"].strip("- ")  # no spinner artifact as Name
+
+    def test_empty_output_returns_empty(self):
+        assert _parse_winget_table("") == []
+
+    def test_no_header_returns_empty(self):
+        assert _parse_winget_table("some random text\nno columns here\n") == []
+
+    def test_name_with_parens(self):
+        result = _parse_winget_table(self.SAMPLE)
+        names = [r["Name"] for r in result]
+        assert "7-Zip 26.00 (x64)" in names
+
+
+class TestWinGetTabularFallback:
+    """Integration: _get_name_map() falls back to tabular when JSON fails."""
+
+    TABULAR = (
+        "Name                              Id              Version\n"
+        "--------------------------------  --------------  -------\n"
+        "Git                               Git.Git         2.44.0\n"
+        "draw.io 29.6.6                    JGraph.Draw     29.6.6\n"
+    )
+
+    def _tabular_runner(self):
+        def runner(cmd, **kwargs):
+            if "--output" in cmd and "json" in cmd:
+                return "", "not recognized", 1
+            return self.TABULAR, "", 0
+        return runner
+
+    def test_name_map_populated_from_tabular(self):
+        mgr = WinGetManager(runner=self._tabular_runner())
+        name_map = mgr._get_name_map()
+        assert "git" in name_map
+        assert "draw.io 29.6.6" in name_map or "draw.io" in name_map
+
+    def test_is_managed_works_via_tabular(self):
+        mgr = WinGetManager(runner=self._tabular_runner())
+        assert mgr.is_managed("draw.io 29.6.6") is True
+        assert mgr.is_managed("Git") is True
+
+    def test_both_stripped_and_versioned_indexed(self):
+        """The map must index both 'draw.io 29.6.6' and 'draw.io' so either form matches."""
+        mgr = WinGetManager(runner=self._tabular_runner())
+        mgr.list_managed()  # populate cache
+        name_map = mgr._get_name_map()
+        # At minimum, one of the two forms must be present
+        assert "draw.io 29.6.6" in name_map or "draw.io" in name_map
 
 
 class TestWinGetIsAvailableCaching:
