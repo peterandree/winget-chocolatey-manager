@@ -48,8 +48,42 @@ class ChocolateyManager(InstallablePackageManager):
         return self._get_package_set()
 
     def is_managed(self, display_name: str) -> bool:
-        """Return True if *display_name* matches a locally-installed Chocolatey package."""
-        return normalize_name(display_name) in self._get_package_set()
+        """Return True if *display_name* matches a locally-installed Chocolatey package.
+
+        Tries multiple key forms:
+        1. Normalised full display name
+        2. Version-stripped normalised
+        3. Version-stripped lowercase
+        4. Prefix match — choco package name is a prefix of the normalised name
+           (e.g. choco ``filezilla`` matches registry ``FileZilla Client``)
+        """
+        packages = self._get_package_set()
+        # 1. Full normalised
+        norm = normalize_name(display_name)
+        if norm in packages:
+            return True
+        # 2. Version-stripped normalised
+        stripped = strip_version_suffix(display_name)
+        stripped_norm = normalize_name(stripped)
+        if stripped_norm and stripped_norm != norm and stripped_norm in packages:
+            return True
+        # 3. Exact lowercase of stripped name
+        stripped_lower = stripped.lower()
+        if stripped_lower in packages:
+            return True
+        # 4. Prefix match: check if the choco package name starts with the
+        #    normalised display name or vice versa (e.g. choco ``filezilla``
+        #    matches ``filezillaclient``; choco ``autohotkeyportable`` matches
+        #    display ``autohotkey``).  Only match if the shorter string is ≥4
+        #    chars to avoid false positives.
+        target = stripped_norm or norm
+        if target and len(target) >= 4:
+            for pkg in packages:
+                if len(pkg) < 4:
+                    continue
+                if target.startswith(pkg) or pkg.startswith(target):
+                    return True
+        return False
 
     def search(self, app_name: str) -> Optional[PackageMatch]:
         """Search the Chocolatey repository for *app_name*.
@@ -194,9 +228,14 @@ class ChocolateyManager(InstallablePackageManager):
                 continue
             parts = line.split("|")
             if len(parts) >= 2:
-                norm = normalize_name(parts[0])
+                raw = parts[0].strip()
+                norm = normalize_name(raw)
                 if norm:
                     packages.add(norm)
+                # Also add the raw lowercase name for exact matching
+                # (e.g. "filezilla" as-is, not just "filezilla" normalised)
+                if raw:
+                    packages.add(raw.lower())
         self._cache = packages
         return self._cache
 
