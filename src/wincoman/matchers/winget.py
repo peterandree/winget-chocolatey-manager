@@ -201,6 +201,10 @@ class WinGetManager(InstallablePackageManager):
     def _get_name_map(self) -> dict[str, str]:
         """Return a cached ``{name_lower: id}`` map from winget list.
 
+        **Only packages whose Source is ``winget`` are included.**  Apps that
+        winget can detect but did not install (Source blank) are excluded so
+        they are correctly classified as unmanaged by the detector.
+
         Tries ``winget list --output json`` first (winget ≥ 1.5+).
         If that fails (older winget or missing flag), falls back to parsing
         the plain tabular output of ``winget list``.
@@ -216,8 +220,15 @@ class WinGetManager(InstallablePackageManager):
         if packages is None:
             packages = self._fetch_packages_table()
 
+        # Only keep packages that winget actually manages (Source == "winget").
+        # Packages with blank / unknown Source were installed outside winget.
+        managed = [
+            pkg for pkg in packages
+            if (pkg.get("Source") or "").strip().lower() == "winget"
+        ]
+
         result: dict[str, str] = {}
-        for pkg in packages:
+        for pkg in managed:
             name = (pkg.get("Name") or "").strip()
             pkg_id = pkg.get("Id", "")
             if not name:
@@ -269,10 +280,13 @@ class WinGetManager(InstallablePackageManager):
 
 
 def _parse_winget_table(text: str) -> list[dict]:
-    """Parse winget plain-text tabular output into ``[{Name, Id}, ...]``.
+    """Parse winget plain-text tabular output into ``[{Name, Id, Source}, ...]``.
 
     Finds the header row by locating the line that contains both ``Name``
     and ``Id``, then uses character positions to slice each data row.
+
+    The ``Source`` field is populated when present (winget-managed packages
+    show ``winget``; apps detected but not installed via winget have no source).
 
     Robust against:
     * Leading spinner/progress lines (``- ``)
@@ -293,10 +307,13 @@ def _parse_winget_table(text: str) -> list[dict]:
     header = lines[header_idx]
     name_col = header.index("Name")
     id_col = header.index("Id")
-    # Version column optional
-    ver_col: Optional[int] = header.find("Version")
-    if ver_col == -1:
-        ver_col = None
+
+    ver_col: Optional[int] = None
+    src_col: Optional[int] = None
+    if "Version" in header:
+        ver_col = header.index("Version")
+    if "Source" in header:
+        src_col = header.index("Source")
 
     packages: list[dict] = []
     for line in lines[header_idx + 1 :]:
@@ -307,11 +324,21 @@ def _parse_winget_table(text: str) -> list[dict]:
         if len(line) <= name_col:
             continue
 
+        # Slice columns by header position
         name = line[name_col:id_col].strip() if len(line) > id_col else line[name_col:].strip()
-        id_part = line[id_col:ver_col].strip() if ver_col and len(line) > id_col else (
-            line[id_col:].split()[0] if len(line) > id_col else ""
-        )
+
+        if ver_col and len(line) > id_col:
+            id_part = line[id_col:ver_col].strip()
+        elif len(line) > id_col:
+            id_part = line[id_col:].split()[0]
+        else:
+            id_part = ""
+
+        source = ""
+        if src_col and len(line) > src_col:
+            source = line[src_col:].strip().split()[0] if line[src_col:].strip() else ""
+
         if name:
-            packages.append({"Name": name, "Id": id_part})
+            packages.append({"Name": name, "Id": id_part, "Source": source})
 
     return packages

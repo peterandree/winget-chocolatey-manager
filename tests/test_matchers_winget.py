@@ -27,10 +27,24 @@ class TestWinGetManagerListManaged:
         return _make_runner(json.dumps(packages))
 
     def test_returns_normalised_names(self):
-        packages = [{"Name": "Git", "Id": "Git.Git"}, {"Name": "Python 3.12", "Id": "Python.Python"}]
+        packages = [
+            {"Name": "Git", "Id": "Git.Git", "Source": "winget"},
+            {"Name": "Python 3.12", "Id": "Python.Python", "Source": "winget"},
+        ]
         mgr = WinGetManager(runner=self._make_json_runner(packages))
         managed = mgr.list_managed()
         assert "git" in managed
+
+    def test_excludes_sourceless_packages(self):
+        """Packages without Source='winget' must not appear as managed."""
+        packages = [
+            {"Name": "Git", "Id": "Git.Git", "Source": "winget"},
+            {"Name": "UnmanagedApp", "Id": "ARP\\...", "Source": ""},
+        ]
+        mgr = WinGetManager(runner=self._make_json_runner(packages))
+        managed = mgr.list_managed()
+        assert "git" in managed
+        assert "unmanagedapp" not in managed
 
     def test_empty_list_when_winget_fails(self):
         mgr = WinGetManager(runner=_make_runner("", returncode=1))
@@ -39,10 +53,10 @@ class TestWinGetManagerListManaged:
     def test_falls_back_to_tabular_when_json_unsupported(self):
         """Older winget versions reject --output json; tabular output must still work."""
         TABULAR = (
-            "Name                              Id              Version\n"
-            "--------------------------------  --------------  -------\n"
-            "Git                               Git.Git         2.44.0\n"
-            "draw.io 29.6.6                    JGraph.Draw     29.6.6\n"
+            "Name                              Id              Version    Source\n"
+            "--------------------------------  --------------  ---------  ------\n"
+            "Git                               Git.Git         2.44.0     winget\n"
+            "draw.io 29.6.6                    JGraph.Draw     29.6.6     winget\n"
         )
 
         def runner(cmd, **kwargs):
@@ -66,7 +80,7 @@ class TestWinGetManagerListManaged:
 
         def runner(cmd, **kwargs):
             calls.append(cmd)
-            return json.dumps([{"Name": "Git", "Id": "Git.Git"}]), "", 0
+            return json.dumps([{"Name": "Git", "Id": "Git.Git", "Source": "winget"}]), "", 0
 
         mgr = WinGetManager(runner=runner)
         # First call loads cache; second uses it
@@ -80,7 +94,11 @@ class TestWinGetManagerListManaged:
 
 class TestWinGetManagerIsManaged:
     def _manager_with(self, packages):
-        runner = _make_runner(json.dumps(packages))
+        # Ensure all test packages have Source="winget" so they pass the filter
+        pkgs_with_source = [
+            dict(p, Source=p.get("Source", "winget")) for p in packages
+        ]
+        runner = _make_runner(json.dumps(pkgs_with_source))
         return WinGetManager(runner=runner)
 
     def test_exact_match_returns_true(self):
@@ -127,6 +145,7 @@ class TestParseWingetTable:
         "Git                               Git.Git         2.44.0     winget\n"
         "draw.io 29.6.6                    JGraph.Draw     29.6.6     winget\n"
         "7-Zip 26.00 (x64)                 7zip.7zip       26.00      winget\n"
+        "SCMS                              ARP\\...         2.1.10\n"
     )
 
     def test_parses_name_and_id(self):
@@ -134,6 +153,13 @@ class TestParseWingetTable:
         names = [r["Name"] for r in result]
         assert "Git" in names
         assert "draw.io 29.6.6" in names
+
+    def test_parses_source_column(self):
+        result = _parse_winget_table(self.SAMPLE)
+        by_name = {r["Name"]: r for r in result}
+        assert by_name["Git"]["Source"] == "winget"
+        assert by_name["draw.io 29.6.6"]["Source"] == "winget"
+        assert by_name["SCMS"]["Source"] == ""  # no source
 
     def test_parses_versioned_name(self):
         result = _parse_winget_table(self.SAMPLE)
@@ -159,13 +185,14 @@ class TestParseWingetTable:
 
 
 class TestWinGetTabularFallback:
-    """Integration: _get_name_map() falls back to tabular when JSON fails."""
+    """Integration: _get_name_map() falls back to tabular, filters by Source=winget."""
 
     TABULAR = (
-        "Name                              Id              Version\n"
-        "--------------------------------  --------------  -------\n"
-        "Git                               Git.Git         2.44.0\n"
-        "draw.io 29.6.6                    JGraph.Draw     29.6.6\n"
+        "Name                              Id              Version    Source\n"
+        "--------------------------------  --------------  ---------  ------\n"
+        "Git                               Git.Git         2.44.0     winget\n"
+        "draw.io 29.6.6                    JGraph.Draw     29.6.6     winget\n"
+        "SCMS                              ARP\\Machine\\..  2.1.10\n"
     )
 
     def _tabular_runner(self):
@@ -179,20 +206,31 @@ class TestWinGetTabularFallback:
         mgr = WinGetManager(runner=self._tabular_runner())
         name_map = mgr._get_name_map()
         assert "git" in name_map
-        assert "draw.io 29.6.6" in name_map or "draw.io" in name_map
+        # draw.io should be indexed (either versioned or stripped form)
+        assert "draw.io 29.6.6" in name_map or "draw.io" in name_map or "drawio" in name_map
+
+    def test_sourceless_entries_excluded(self):
+        """Apps without Source column (not winget-managed) must not appear in the map."""
+        mgr = WinGetManager(runner=self._tabular_runner())
+        name_map = mgr._get_name_map()
+        assert "scms" not in name_map
 
     def test_is_managed_works_via_tabular(self):
         mgr = WinGetManager(runner=self._tabular_runner())
         assert mgr.is_managed("draw.io 29.6.6") is True
         assert mgr.is_managed("Git") is True
 
+    def test_sourceless_app_not_managed(self):
+        """SCMS has no Source — must be reported as NOT managed by winget."""
+        mgr = WinGetManager(runner=self._tabular_runner())
+        assert mgr.is_managed("SCMS") is False
+
     def test_both_stripped_and_versioned_indexed(self):
         """The map must index both 'draw.io 29.6.6' and 'draw.io' so either form matches."""
         mgr = WinGetManager(runner=self._tabular_runner())
         mgr.list_managed()  # populate cache
         name_map = mgr._get_name_map()
-        # At minimum, one of the two forms must be present
-        assert "draw.io 29.6.6" in name_map or "draw.io" in name_map
+        assert "draw.io 29.6.6" in name_map or "draw.io" in name_map or "drawio" in name_map
 
 
 class TestWinGetIsAvailableCaching:
@@ -217,13 +255,16 @@ class TestWinGetIsAvailableCaching:
 class TestWinGetExtractOne:
     """Issue #32: is_managed() should use rapidfuzz.process.extractOne."""
 
+    def _pkgs(self, *names_ids):
+        return [{"Name": n, "Id": i, "Source": "winget"} for n, i in names_ids]
+
     def test_fuzzy_match_uses_extract_one(self):
         """extractOne short-circuits — semantically identical to the loop."""
-        packages = [
-            {"Name": "GitHub Desktop", "Id": "GitHub.GitHubDesktop"},
-            {"Name": "Visual Studio Code", "Id": "Microsoft.VisualStudioCode"},
-            {"Name": "Node.js", "Id": "OpenJS.NodeJS"},
-        ]
+        packages = self._pkgs(
+            ("GitHub Desktop", "GitHub.GitHubDesktop"),
+            ("Visual Studio Code", "Microsoft.VisualStudioCode"),
+            ("Node.js", "OpenJS.NodeJS"),
+        )
         runner = _make_runner(json.dumps(packages))
         mgr = WinGetManager(runner=runner)
         assert mgr.is_managed("GitHub Desktop") is True
@@ -232,12 +273,12 @@ class TestWinGetExtractOne:
 
     def test_extract_one_respects_min_score(self):
         """Score cutoff is passed through to extractOne."""
-        packages = [{"Name": "Git", "Id": "Git.Git"}]
+        packages = self._pkgs(("Git", "Git.Git"))
         runner = _make_runner(json.dumps(packages))
         mgr = WinGetManager(runner=runner, min_score=99)
         # "Git" exact match still works (O(1) dict lookup)
         assert mgr.is_managed("git") is True
-        # Fuzzy path: score("GitX", "git") < 99
+        # Fuzzy path: score("GitXYZ", "git") < 99
         assert mgr.is_managed("GitXYZ") is False
 
 
