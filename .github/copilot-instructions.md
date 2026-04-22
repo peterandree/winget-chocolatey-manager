@@ -78,3 +78,9 @@ result = subprocess.run(["winget", "list"], capture_output=True)
 - ✅ Always: read existing file before editing — check `shell.py` and `cache.py` before adding any new subprocess or caching logic
 - ⚠️ Ask first: adding a new dependency to `pyproject.toml`, changing the CLI interface or argument names
 - 🚫 Never: call `subprocess` directly outside `shell.py`, extend `register_unmanaged_apps.py`, commit secrets or user-specific paths
+
+## MCP Tools
+
+When writing or reviewing code that uses external libraries or frameworks,
+always resolve library documentation using the context7 MCP tool before generating code.
+Use `resolve-library-id` followed by `get-library-docs` for any library the user references.
