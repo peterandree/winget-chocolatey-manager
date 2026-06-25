@@ -80,7 +80,7 @@ def fuzzy_score(a: str, b: str) -> int:
     return 100 if na == nb else 0
 
 
-def versions_differ(installed: str, choco: str) -> bool:
+def versions_differ(installed: str | None, choco: str | None) -> bool:
     """Return True if *installed* and *choco* differ at the major-version level.
 
     Both values are normalised to their leading numeric component.  If either
