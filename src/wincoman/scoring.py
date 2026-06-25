@@ -88,9 +88,11 @@ def versions_differ(installed: str, choco: str) -> bool:
     returned.
     """
 
-    def _major(ver: str) -> str:
-        ver = ver.strip()
-        if not ver or ver.lower() in ("unknown", "n/a", ""):
+    def _major(ver) -> str:
+        if ver is None:
+            return ""
+        ver = str(ver).strip()
+        if not ver or ver.lower() in ("unknown", "n/a"):
             return ""
         parts = re.findall(r"\d+", ver)
         return parts[0] if parts else ""
