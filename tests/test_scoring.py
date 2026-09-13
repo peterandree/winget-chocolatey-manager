@@ -6,9 +6,8 @@ class TestNormalizeName:
     def test_empty_string_returns_empty(self):
         assert normalize_name("") == ""
 
-    def test_none_equivalent_guard(self):
-        # Callers may pass empty but not None; verify basic safety
-        assert normalize_name("") == ""
+    def test_whitespace_only_returns_empty_string(self):
+        assert normalize_name("   ") == ""
 
     def test_strips_version_suffix(self):
         assert normalize_name("Git 2.44.0") == "git"
@@ -20,9 +19,7 @@ class TestNormalizeName:
         assert normalize_name("NODEJS") == "nodejs"
 
     def test_version_only_returns_empty(self):
-        # "2.0" becomes "" after stripping digits.digits.*
-        result = normalize_name("2.0")
-        assert isinstance(result, str)
+        assert normalize_name("2.0") == ""
 
 
 class TestFuzzyScore:
@@ -49,6 +46,14 @@ class TestFuzzyScore:
         score = fuzzy_score("something", "something else")
         assert 0 <= score <= 100
 
+    def test_falls_back_to_normalized_exact_match_without_rapidfuzz(self, monkeypatch):
+        from wincoman import scoring
+
+        monkeypatch.setattr(scoring, "_RAPIDFUZZ_AVAILABLE", False)
+
+        assert scoring.fuzzy_score("Google Chrome", "googlechrome") == 100
+        assert scoring.fuzzy_score("Google Chrome", "Chrome") == 0
+
 
 class TestVersionsDiffer:
     def test_same_major_returns_false(self):
@@ -57,11 +62,20 @@ class TestVersionsDiffer:
     def test_different_major_returns_true(self):
         assert versions_differ("1.0.0", "2.0.0") is True
 
+    def test_v_prefix_is_ignored_when_comparing_major_versions(self):
+        assert versions_differ("v2.1.0", "2.9.0") is False
+
     def test_empty_installed_returns_false(self):
         assert versions_differ("", "2.0.0") is False
 
     def test_empty_choco_returns_false(self):
         assert versions_differ("2.0.0", "") is False
+
+    def test_none_installed_returns_false(self):
+        assert versions_differ(None, "2.0.0") is False
+
+    def test_none_choco_returns_false(self):
+        assert versions_differ("2.0.0", None) is False
 
     def test_unknown_version_returns_false(self):
         assert versions_differ("unknown", "2.0.0") is False
@@ -88,6 +102,9 @@ class TestStripVersionSuffix:
     def test_v_prefix(self):
         assert strip_version_suffix("SomeApp v3.2.1") == "SomeApp"
 
+    def test_strips_whitespace_around_version_suffix(self):
+        assert strip_version_suffix("  SomeApp v3.2.1   ") == "SomeApp"
+
     def test_version_with_parens(self):
         assert strip_version_suffix("Python 3.12.4 (64-bit)") == "Python"
 
@@ -100,7 +117,4 @@ class TestStripVersionSuffix:
         assert result == "HWiNFO64"
 
     def test_preserves_name_when_only_version(self):
-        # Edge case: input is just a version — return as-is
-        result = strip_version_suffix("7.28")
-        assert isinstance(result, str)
-        assert result  # not empty
+        assert strip_version_suffix("7.28") == "7.28"

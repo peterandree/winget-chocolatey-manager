@@ -80,7 +80,7 @@ def fuzzy_score(a: str, b: str) -> int:
     return 100 if na == nb else 0
 
 
-def versions_differ(installed: str, choco: str) -> bool:
+def versions_differ(installed: str | None, choco: str | None) -> bool:
     """Return True if *installed* and *choco* differ at the major-version level.
 
     Both values are normalised to their leading numeric component.  If either
@@ -88,9 +88,11 @@ def versions_differ(installed: str, choco: str) -> bool:
     returned.
     """
 
-    def _major(ver: str) -> str:
-        ver = ver.strip()
-        if not ver or ver.lower() in ("unknown", "n/a", ""):
+    def _major(ver) -> str:
+        if ver is None:
+            return ""
+        ver = str(ver).strip()
+        if not ver or ver.lower() in ("unknown", "n/a"):
             return ""
         parts = re.findall(r"\d+", ver)
         return parts[0] if parts else ""
